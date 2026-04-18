@@ -1,0 +1,7 @@
+{
+  "error": {
+    "message": "/v1/responses 首版仅支持 image_generation=true 或 tools:[{type:\"image_generation\"}]",
+    "type": "invalid_request_error",
+    "code": "invalid_request_error"
+  }
+}

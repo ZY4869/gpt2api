@@ -1,0 +1,7 @@
+{
+  "error": {
+    "message": "上游本轮对话未返回图片结果,没有自动降级到旧图片接口",
+    "type": "invalid_request_error",
+    "code": "upstream_image_not_returned"
+  }
+}

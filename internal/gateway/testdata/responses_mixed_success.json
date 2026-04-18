@@ -1,0 +1,31 @@
+{
+  "id": "resp_mixed-response-1",
+  "object": "response",
+  "created_at": 1710806400,
+  "model": "gpt-5",
+  "status": "completed",
+  "output": [
+    {
+      "id": "igc_mixed-image-call-1",
+      "type": "image_generation_call",
+      "status": "completed",
+      "result": [
+        {
+          "type": "output_image",
+          "url": "/p/img/task_response/0?exp=1710892800000&sig=resp123mixed",
+          "file_id": "file_response_1",
+          "content_type": "image/png",
+          "task_id": "task_response"
+        }
+      ]
+    }
+  ],
+  "images": [
+    {
+      "url": "/p/img/task_response/0?exp=1710892800000&sig=resp123mixed",
+      "file_id": "file_response_1",
+      "content_type": "image/png",
+      "task_id": "task_response"
+    }
+  ]
+}

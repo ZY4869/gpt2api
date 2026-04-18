@@ -1,0 +1,73 @@
+app:
+  name: gpt2api
+  env: dev              # dev | prod
+  listen: ":8080"
+  base_url: "http://localhost:8080"
+
+log:
+  level: info           # debug | info | warn | error
+  format: console       # console | json
+  output: stdout        # stdout | /var/log/gpt2api.log
+
+mysql:
+  dsn: "gpt2api:gpt2api@tcp(127.0.0.1:3306)/gpt2api?parseTime=true&loc=Local&charset=utf8mb4&collation=utf8mb4_unicode_ci"
+  # 开发期 100 够用;生产目标 2000 chat SSE + 1000 图,推荐 500,MySQL 侧 max_connections>=1000
+  max_open_conns: 100
+  max_idle_conns: 20
+  conn_max_lifetime_sec: 3600
+
+redis:
+  addr: "127.0.0.1:6379"
+  password: ""
+  db: 0
+  # 开发期 100;生产推荐 500(锁 + 队列 + 令牌桶并发高)
+  pool_size: 100
+
+jwt:
+  secret: "CHANGE_ME_TO_RANDOM_32_BYTES_SECRET"
+  access_ttl_sec: 86400
+  refresh_ttl_sec: 2592000
+  issuer: "gpt2api"
+
+crypto:
+  # 32 字节 hex(64 字符),用于 AES-256-GCM 加密账号 AT / cookies
+  aes_key: "CHANGE_ME_TO_64_HEX_CHARS_AES_256_KEY_000000000000000000000000"
+
+security:
+  bcrypt_cost: 10
+  cors_origins:
+    - "http://localhost:5173"
+    - "http://localhost:5174"
+
+# 账号池调度
+scheduler:
+  min_interval_sec: 60
+  daily_usage_ratio: 0.6          # 单号日消耗熔断阈值
+  lock_ttl_sec: 1200
+  cooldown_429_sec: 600           # 连续 429 冷却
+  warned_pause_hours: 24
+
+# 上游 chatgpt.com
+upstream:
+  base_url: "https://chatgpt.com"
+  request_timeout_sec: 60
+  sse_read_timeout_sec: 300
+
+# 支付(易支付)
+epay:
+  gateway_url: ""
+  pid: ""
+  key: ""
+  notify_url: ""
+  return_url: ""
+  sign_type: "MD5"
+  expires_min: 30
+
+smtp:
+  host: ""
+  port: 465
+  username: ""
+  password: ""
+  from: ""
+  from_name: "GPT2API"
+  use_tls: true

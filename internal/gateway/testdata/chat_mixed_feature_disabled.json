@@ -1,0 +1,7 @@
+{
+  "error": {
+    "message": "对话框生图功能未开启,请联系管理员启用 gateway.chat_image_mixed_enabled",
+    "type": "invalid_request_error",
+    "code": "feature_disabled"
+  }
+}

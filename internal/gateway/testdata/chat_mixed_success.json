@@ -1,0 +1,29 @@
+{
+  "id": "chatcmpl-mixed-chat-1",
+  "object": "chat.completion",
+  "created": 1710806400,
+  "model": "gpt-5",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": ""
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0
+  },
+  "images": [
+    {
+      "url": "/p/img/task_mixed/0?exp=1710892800000&sig=abc123mixed",
+      "file_id": "file_mixed_1",
+      "content_type": "image/png",
+      "task_id": "task_mixed"
+    }
+  ]
+}
