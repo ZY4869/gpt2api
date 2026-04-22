@@ -45,11 +45,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release/bin release/assets
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o release/bin/gpt2api ./cmd/server
-          GOBIN="$PWD/release/bin" go install github.com/pressly/goose/v3/cmd/goose@v3.24.3
+          mkdir -p release/bin release/assets release/gopath
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-s -w" -o release/bin/gpt2api ./cmd/server
+          GOPATH="$PWD/release/gopath" GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go install github.com/pressly/goose/v3/cmd/goose@v3.24.3
+          cp "$PWD/release/gopath/bin/linux_arm64/goose" release/bin/goose
           tar -czf "release/assets/gpt2api-web-dist-${GITHUB_REF_NAME}.tar.gz" -C web dist
-          tar -czf "release/assets/gpt2api-linux-amd64-${GITHUB_REF_NAME}.tar.gz" -C release/bin gpt2api goose
+          tar -czf "release/assets/gpt2api-linux-arm64-${GITHUB_REF_NAME}.tar.gz" -C release/bin gpt2api goose
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
