@@ -40,6 +40,7 @@ type ChatCompletionResponse struct {
 type ChatCompletionChoice struct {
 	Index        int                 `json:"index"`
 	Message      chatgpt.ChatMessage `json:"message"`
+	Reasoning    string              `json:"reasoning,omitempty"`
 	FinishReason string              `json:"finish_reason"`
 }
 

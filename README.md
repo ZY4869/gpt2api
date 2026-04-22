@@ -432,9 +432,10 @@ curl https://your-domain.com/v1/responses \
 
 - mixed-mode 只在 `image_generation=true` 或 `tools:[{type:"image_generation"}]` 时触发
 - mixed-mode 暂不支持 `stream=true`,命中后固定返回 `400 image_generation_stream_unsupported`
-- 成功时请从顶层 `images` 字段读取图片代理链接,`chat.completion.choices[0].message.content` 固定为空字符串
+- 成功时请从顶层 `images` 字段读取图片代理链接;thinking 生图若上游返回了思考摘要,会同步带回到 `chat.completion.choices[0].message.content` / `choices[0].reasoning`,`/v1/responses` 则会在 `output` 里额外补一条 `type:"message"` 的文本项
 - 如果上游同轮对话没有真的产图,服务端会严格返回 `upstream_image_not_returned`,不会自动降级到旧 `/v1/images/generations`
 - mixed-mode 仍保留对话模型语义,对外 `model` 不变,内部只用默认图片模型配置做计费和 `image_tasks` 落库映射
+- thinking mixed-mode 默认使用更长的执行/轮询超时,并可通过 `gateway.chat_image_run_timeout_sec`、`gateway.chat_image_poll_max_wait_sec`、`gateway.chat_image_thinking_run_timeout_sec`、`gateway.chat_image_thinking_poll_max_wait_sec` 单独调优
 
 发布与观测建议:
 

@@ -21,11 +21,6 @@ import (
 	"github.com/432539/gpt2api/pkg/logger"
 )
 
-const (
-	mixedModeRunTimeout  = 6 * time.Minute
-	mixedModePollMaxWait = 180 * time.Second
-)
-
 type mixedModeExecResult struct {
 	TaskID         string
 	AccountID      uint64
@@ -35,6 +30,8 @@ type mixedModeExecResult struct {
 	ContentTypes   []string
 	Images         []MixedModeImage
 	IsPreview      bool
+	AssistantText  string
+	ReasoningText  string
 }
 
 type mixedModeAPIError struct {
@@ -103,8 +100,9 @@ func (h *Handler) handleChatImageGeneration(c *gin.Context, rec *usage.Log, ak *
 			Index: 0,
 			Message: chatgpt.ChatMessage{
 				Role:    "assistant",
-				Content: "",
+				Content: res.responseText(),
 			},
+			Reasoning:    strings.TrimSpace(res.ReasoningText),
 			FinishReason: "stop",
 		}},
 		Usage:  ChatCompletionUsage{},
@@ -239,7 +237,7 @@ func (h *Handler) executeMixedModeChatImage(
 	}
 	taskCreated = true
 
-	runCtx, cancel := context.WithTimeout(c.Request.Context(), mixedModeRunTimeout)
+	runCtx, cancel := context.WithTimeout(c.Request.Context(), h.mixedModeRunTimeout(chatModel))
 	defer cancel()
 
 	logger.L().Info("chat mixed image start",
@@ -442,6 +440,8 @@ func (h *Handler) runMixedModeChatImageConversation(
 		TaskID:         taskID,
 		AccountID:      lease.Account.ID,
 		ConversationID: sseRes.ConversationID,
+		AssistantText:  sseRes.AssistantText,
+		ReasoningText:  sseRes.ReasoningText,
 	}
 
 	logger.L().Info("chat mixed image SSE parsed",
@@ -469,7 +469,7 @@ func (h *Handler) runMixedModeChatImageConversation(
 			}
 		}
 		status, fids, sids := cli.PollConversationForImages(ctx, res.ConversationID, chatgpt.PollOpts{
-			MaxWait:     mixedModePollMaxWait,
+			MaxWait:     h.mixedModePollMaxWait(chatModel),
 			TargetCount: req.RequestedN,
 		})
 		switch status {

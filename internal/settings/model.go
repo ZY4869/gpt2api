@@ -54,17 +54,21 @@ const (
 	KeyMaxPerUser          = "key.max_per_user"
 
 	// 网关与调度
-	GatewayUpstreamTimeoutSec    = "gateway.upstream_timeout_sec"
-	GatewaySSEReadTimeoutSec     = "gateway.sse_read_timeout_sec"
-	GatewayChatImageMixedEnabled = "gateway.chat_image_mixed_enabled"
-	GatewayChatImageThinkingStrategy = "gateway.chat_image_thinking_strategy"
-	GatewayChatImageMaxN         = "gateway.chat_image_max_n"
-	GatewayCooldown429Sec        = "gateway.cooldown_429_sec"
-	GatewayWarnedPauseHours      = "gateway.warned_pause_hours"
-	GatewayDailyUsageRatio       = "gateway.daily_usage_ratio"
-	GatewayRetryOnFailure        = "gateway.retry_on_failure"
-	GatewayRetryMax              = "gateway.retry_max"
-	GatewayDispatchQueueWaitSec  = "gateway.dispatch_queue_wait_sec"
+	GatewayUpstreamTimeoutSec              = "gateway.upstream_timeout_sec"
+	GatewaySSEReadTimeoutSec               = "gateway.sse_read_timeout_sec"
+	GatewayChatImageMixedEnabled           = "gateway.chat_image_mixed_enabled"
+	GatewayChatImageRunTimeoutSec          = "gateway.chat_image_run_timeout_sec"
+	GatewayChatImagePollMaxWaitSec         = "gateway.chat_image_poll_max_wait_sec"
+	GatewayChatImageThinkingRunTimeoutSec  = "gateway.chat_image_thinking_run_timeout_sec"
+	GatewayChatImageThinkingPollMaxWaitSec = "gateway.chat_image_thinking_poll_max_wait_sec"
+	GatewayChatImageThinkingStrategy       = "gateway.chat_image_thinking_strategy"
+	GatewayChatImageMaxN                   = "gateway.chat_image_max_n"
+	GatewayCooldown429Sec                  = "gateway.cooldown_429_sec"
+	GatewayWarnedPauseHours                = "gateway.warned_pause_hours"
+	GatewayDailyUsageRatio                 = "gateway.daily_usage_ratio"
+	GatewayRetryOnFailure                  = "gateway.retry_on_failure"
+	GatewayRetryMax                        = "gateway.retry_max"
+	GatewayDispatchQueueWaitSec            = "gateway.dispatch_queue_wait_sec"
 
 	// 代理管理(健康探测)
 	ProxyProbeEnabled     = "proxy.probe_enabled"
@@ -129,6 +133,10 @@ var Defs = []KeyDef{
 	{Key: GatewayUpstreamTimeoutSec, Type: "int", Category: "gateway", Default: "60", Label: "上游请求超时(秒)", Desc: "非流式请求上游响应超时"},
 	{Key: GatewaySSEReadTimeoutSec, Type: "int", Category: "gateway", Default: "120", Label: "SSE 读超时(秒)", Desc: "流式响应无数据时的中断阈值"},
 	{Key: GatewayChatImageMixedEnabled, Type: "bool", Category: "gateway", Default: "false", Label: "启用对话框生图", Desc: "允许 /v1/chat/completions 与 /v1/responses 在同轮对话里触发生图"},
+	{Key: GatewayChatImageRunTimeoutSec, Type: "int", Category: "gateway", Default: "360", Label: "对话框生图总超时(秒)", Desc: "非 thinking mixed-mode 生图整轮执行的总超时"},
+	{Key: GatewayChatImagePollMaxWaitSec, Type: "int", Category: "gateway", Default: "180", Label: "对话框生图轮询上限(秒)", Desc: "非 thinking mixed-mode 在 conversation 轮询图片结果的最长等待"},
+	{Key: GatewayChatImageThinkingRunTimeoutSec, Type: "int", Category: "gateway", Default: "600", Label: "思考生图总超时(秒)", Desc: "thinking mixed-mode 生图整轮执行的总超时"},
+	{Key: GatewayChatImageThinkingPollMaxWaitSec, Type: "int", Category: "gateway", Default: "300", Label: "思考生图轮询上限(秒)", Desc: "thinking mixed-mode 在 conversation 轮询图片结果的最长等待"},
 	{Key: GatewayChatImageThinkingStrategy, Type: "string", Category: "gateway", Default: "picture_v2_thinking", Label: "思考生图策略", Desc: "picture_v2_thinking=稳定模式; native_thinking=抓包实验模式"},
 	{Key: GatewayChatImageMaxN, Type: "int", Category: "gateway", Default: "10", Label: "对话框生图最大张数", Desc: "mixed-mode 每次最多生成的图片数量(1~10)"},
 	{Key: GatewayCooldown429Sec, Type: "int", Category: "gateway", Default: "300", Label: "429 冷却(秒)", Desc: "账号遇 429 后暂停调度"},

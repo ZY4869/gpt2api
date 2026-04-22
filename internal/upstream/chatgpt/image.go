@@ -2,17 +2,17 @@
 //
 // 完整链路(和文字聊天共用 f/conversation,只通过 system_hints=["picture_v2"] 区分):
 //
-//	0. (可选) GET /                              → 拿 oai-did cookie
-//	1. POST /backend-api/f/conversation/prepare      → conduit_token(灰度分桶关键)
-//	2. POST /backend-api/sentinel/chat-requirements → chat_token + 可选 POW 挑战
-//	3. POST /backend-api/f/conversation (SSE)         → 边解析边收 file-service://
-//	4. 灰度命中判据:SSE 没直出 file-service 时轮询
-//	   GET /backend-api/conversation/{id}
-//	   - IMG2 tool 消息 ≥ 2 条 → 灰度命中,取最新那条
-//	   - 只 1 条 → preview_only(非灰度,换账号重试)
-//	5. GET /backend-api/files/{fid}/download                   → 签名 URL(file-service)
-//	   GET /backend-api/conversation/{cid}/attachment/{sid}/download → 签名 URL(sediment)
-//	6. GET 签名 URL → 图片字节
+//  0. (可选) GET /                              → 拿 oai-did cookie
+//  1. POST /backend-api/f/conversation/prepare      → conduit_token(灰度分桶关键)
+//  2. POST /backend-api/sentinel/chat-requirements → chat_token + 可选 POW 挑战
+//  3. POST /backend-api/f/conversation (SSE)         → 边解析边收 file-service://
+//  4. 灰度命中判据:SSE 没直出 file-service 时轮询
+//     GET /backend-api/conversation/{id}
+//     - IMG2 tool 消息 ≥ 2 条 → 灰度命中,取最新那条
+//     - 只 1 条 → preview_only(非灰度,换账号重试)
+//  5. GET /backend-api/files/{fid}/download                   → 签名 URL(file-service)
+//     GET /backend-api/conversation/{cid}/attachment/{sid}/download → 签名 URL(sediment)
+//  6. GET 签名 URL → 图片字节
 //
 // 注意:不要调用 /backend-api/conversation/init——这是老客户端路径,在免费账号上会
 // 直接 404 让整条链路失败,上游把 picture_v2 路由完全交给 f/conversation 的 payload。
@@ -306,6 +306,8 @@ type ImageSSEResult struct {
 	SedimentIDs    []string // sediment:// 引用(通常是预览,需要轮询)
 	FinishType     string   // finish_details.type(interrupted/stop/...)
 	ImageGenTaskID string
+	AssistantText  string
+	ReasoningText  string
 }
 
 var (
@@ -319,16 +321,24 @@ func ParseImageSSE(stream <-chan SSEEvent) ImageSSEResult {
 	var r ImageSSEResult
 	seenFile := map[string]struct{}{}
 	seenSed := map[string]struct{}{}
+	textCollector := newSSETextCollector()
 
 	for ev := range stream {
 		if ev.Err != nil {
+			text := textCollector.Result()
+			r.AssistantText = sanitizeImageSSEText(text.AssistantText)
+			r.ReasoningText = sanitizeImageSSEText(text.ReasoningText)
 			return r
 		}
 		data := ev.Data
 		if len(data) == 0 {
 			continue
 		}
+		textCollector.Consume(data)
 		if string(data) == "[DONE]" {
+			text := textCollector.Result()
+			r.AssistantText = sanitizeImageSSEText(text.AssistantText)
+			r.ReasoningText = sanitizeImageSSEText(text.ReasoningText)
 			return r
 		}
 		// 文本正则先扫一遍(比 JSON 解析更健壮)
@@ -369,19 +379,39 @@ func ParseImageSSE(stream <-chan SSEEvent) ImageSSEResult {
 			}
 		}
 	}
+	text := textCollector.Result()
+	r.AssistantText = sanitizeImageSSEText(text.AssistantText)
+	r.ReasoningText = sanitizeImageSSEText(text.ReasoningText)
 	return r
+}
+
+func sanitizeImageSSEText(v string) string {
+	v = reFileRef.ReplaceAllString(v, "")
+	v = reSedRef.ReplaceAllString(v, "")
+	if strings.TrimSpace(v) == "" {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(v), "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			lines[i] = ""
+			continue
+		}
+		lines[i] = strings.Join(strings.Fields(line), " ")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // ImageToolMsg 是 conversation.mapping 里一条 IMG2 tool 消息的关键字段。
 type ImageToolMsg struct {
-	MessageID    string
-	CreateTime   float64
-	ModelSlug    string
-	Recipient    string
-	AuthorName   string
+	MessageID     string
+	CreateTime    float64
+	ModelSlug     string
+	Recipient     string
+	AuthorName    string
 	ImageGenTitle string
-	FileIDs      []string // file-service
-	SedimentIDs  []string // sediment
+	FileIDs       []string // file-service
+	SedimentIDs   []string // sediment
 }
 
 // GetConversationMapping 读取会话全量 mapping(轮询用)。

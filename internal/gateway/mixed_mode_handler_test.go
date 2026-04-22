@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -328,6 +329,100 @@ func TestMixedModeRejectsThinkingEffortWithoutImageGeneration(t *testing.T) {
 		h.Responses(c)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400", w.Code)
+		}
+	})
+}
+
+func TestMixedModeReturnsReasoningContent(t *testing.T) {
+	ak := &apikey.APIKey{ID: 7, UserID: 9, Enabled: true}
+
+	t.Run("chat_completions", func(t *testing.T) {
+		withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "mixed-chat-reasoning")
+		h := &Handler{
+			Usage:    &fakeUsageStore{},
+			Settings: fakeSettings{mixedEnabled: true},
+			mixedModeExec: func(_ *gin.Context, rec *usage.Log, _ *apikey.APIKey, _ string, _ mixedModeRequestInput) (*mixedModeExecResult, *mixedModeAPIError) {
+				rec.Type = usage.TypeImage
+				rec.Status = usage.StatusSuccess
+				return &mixedModeExecResult{
+					ReasoningText: "先规划两张故事书分镜，再保证角色动作连贯。",
+					AssistantText: "我会生成两张连续故事图。",
+					Images: []MixedModeImage{{
+						URL:         "/p/img/task_reasoning/0?exp=1710892800000&sig=chatreason",
+						FileID:      "file_reasoning_1",
+						ContentType: "image/png",
+						TaskID:      "task_reasoning",
+					}},
+				}, nil
+			},
+		}
+		c, w := newJSONContext(t, "/v1/chat/completions", `{"model":"gpt-5-thinking","image_generation":true,"stream":false,"messages":[{"role":"user","content":"生成两张连续故事图"}]}`, ak)
+		h.ChatCompletions(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+
+		var resp ChatCompletionResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(resp.Choices) != 1 {
+			t.Fatalf("choices = %d, want 1", len(resp.Choices))
+		}
+		wantContent := "先规划两张故事书分镜，再保证角色动作连贯。\n\n我会生成两张连续故事图。"
+		if resp.Choices[0].Message.Content != wantContent {
+			t.Fatalf("message.content = %q, want %q", resp.Choices[0].Message.Content, wantContent)
+		}
+		if resp.Choices[0].Reasoning != "先规划两张故事书分镜，再保证角色动作连贯。" {
+			t.Fatalf("reasoning = %q", resp.Choices[0].Reasoning)
+		}
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "mixed-response-reasoning", "mixed-response-message", "mixed-response-image")
+		h := &Handler{
+			Usage:    &fakeUsageStore{},
+			Settings: fakeSettings{mixedEnabled: true},
+			mixedModeExec: func(_ *gin.Context, rec *usage.Log, _ *apikey.APIKey, _ string, _ mixedModeRequestInput) (*mixedModeExecResult, *mixedModeAPIError) {
+				rec.Type = usage.TypeImage
+				rec.Status = usage.StatusSuccess
+				return &mixedModeExecResult{
+					ReasoningText: "先安排起床，再收束到山顶作画。",
+					AssistantText: "我会保持同一画风和透明背景。",
+					Images: []MixedModeImage{{
+						URL:         "/p/img/task_resp_reasoning/0?exp=1710892800000&sig=respreason",
+						FileID:      "file_resp_reasoning_1",
+						ContentType: "image/png",
+						TaskID:      "task_resp_reasoning",
+					}},
+				}, nil
+			},
+		}
+		c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-thinking","input":"生成两张连续故事图","tools":[{"type":"image_generation"}],"stream":false}`, ak)
+		h.Responses(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+
+		var resp ResponseObject
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(resp.Output) != 2 {
+			t.Fatalf("output len = %d, want 2", len(resp.Output))
+		}
+		if resp.Output[0].Type != "message" || resp.Output[0].Role != "assistant" {
+			t.Fatalf("first output = %#v, want assistant message", resp.Output[0])
+		}
+		if len(resp.Output[0].Content) != 1 || resp.Output[0].Content[0].Type != "output_text" {
+			t.Fatalf("message content = %#v", resp.Output[0].Content)
+		}
+		wantText := "先安排起床，再收束到山顶作画。\n\n我会保持同一画风和透明背景。"
+		if resp.Output[0].Content[0].Text != wantText {
+			t.Fatalf("message text = %q, want %q", resp.Output[0].Content[0].Text, wantText)
+		}
+		if resp.Output[1].Type != "image_generation_call" {
+			t.Fatalf("second output type = %q, want image_generation_call", resp.Output[1].Type)
 		}
 	})
 }

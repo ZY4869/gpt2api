@@ -24,12 +24,28 @@ type fakeSettings struct {
 	mixedEnabled     bool
 	upstreamSec      int
 	sseSec           int
+	runSec           int
+	pollSec          int
+	thinkingRunSec   int
+	thinkingPollSec  int
 	thinkingStrategy string
 	maxN             int
 }
 
 func (s fakeSettings) GatewayUpstreamTimeoutSec() int { return s.upstreamSec }
 func (s fakeSettings) GatewaySSEReadTimeoutSec() int  { return s.sseSec }
+func (s fakeSettings) GatewayChatImageRunTimeoutSec() int {
+	return s.runSec
+}
+func (s fakeSettings) GatewayChatImagePollMaxWaitSec() int {
+	return s.pollSec
+}
+func (s fakeSettings) GatewayChatImageThinkingRunTimeoutSec() int {
+	return s.thinkingRunSec
+}
+func (s fakeSettings) GatewayChatImageThinkingPollMaxWaitSec() int {
+	return s.thinkingPollSec
+}
 func (s fakeSettings) GatewayChatImageMixedEnabled() bool {
 	return s.mixedEnabled
 }

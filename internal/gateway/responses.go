@@ -103,19 +103,35 @@ func (h *Handler) Responses(c *gin.Context) {
 		})
 	}
 
+	responseID := "resp_" + newUUIDFunc()
+	outputItems := make([]ResponseOutputItem, 0, 2)
+	if text := res.responseText(); text != "" {
+		outputItems = append(outputItems, ResponseOutputItem{
+			ID:     "msg_" + newUUIDFunc(),
+			Type:   "message",
+			Role:   "assistant",
+			Status: "completed",
+			Content: []ResponseOutputContent{{
+				Type: "output_text",
+				Text: text,
+			}},
+		})
+	}
+	outputItems = append(outputItems, ResponseOutputItem{
+		ID:     "igc_" + newUUIDFunc(),
+		Type:   "image_generation_call",
+		Status: "completed",
+		Result: output,
+	})
+
 	c.JSON(http.StatusOK, ResponseObject{
-		ID:        "resp_" + newUUIDFunc(),
+		ID:        responseID,
 		Object:    "response",
 		CreatedAt: nowFunc().Unix(),
 		Model:     req.Model,
 		Status:    "completed",
-		Output: []ResponseOutputItem{{
-			ID:     "igc_" + newUUIDFunc(),
-			Type:   "image_generation_call",
-			Status: "completed",
-			Result: output,
-		}},
-		Images: res.Images,
+		Output:    outputItems,
+		Images:    res.Images,
 	})
 }
 

@@ -57,6 +57,10 @@ type Handler struct {
 		GatewayChatImageMixedEnabled() bool
 		GatewayChatImageThinkingStrategy() string
 		GatewayChatImageMaxN() int
+		GatewayChatImageRunTimeoutSec() int
+		GatewayChatImagePollMaxWaitSec() int
+		GatewayChatImageThinkingRunTimeoutSec() int
+		GatewayChatImageThinkingPollMaxWaitSec() int
 	}
 }
 

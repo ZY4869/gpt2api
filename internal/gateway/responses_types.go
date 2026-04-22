@@ -31,10 +31,17 @@ type ResponseObject struct {
 }
 
 type ResponseOutputItem struct {
-	ID     string                `json:"id,omitempty"`
-	Type   string                `json:"type"`
-	Status string                `json:"status,omitempty"`
-	Result []ResponseOutputImage `json:"result,omitempty"`
+	ID      string                  `json:"id,omitempty"`
+	Type    string                  `json:"type"`
+	Status  string                  `json:"status,omitempty"`
+	Role    string                  `json:"role,omitempty"`
+	Content []ResponseOutputContent `json:"content,omitempty"`
+	Result  []ResponseOutputImage   `json:"result,omitempty"`
+}
+
+type ResponseOutputContent struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }
 
 type ResponseOutputImage struct {
