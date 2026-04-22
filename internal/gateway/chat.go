@@ -55,6 +55,8 @@ type Handler struct {
 		GatewayUpstreamTimeoutSec() int
 		GatewaySSEReadTimeoutSec() int
 		GatewayChatImageMixedEnabled() bool
+		GatewayChatImageThinkingStrategy() string
+		GatewayChatImageMaxN() int
 	}
 }
 
@@ -121,6 +123,14 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	var req ChatCompletionsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		openAIError(c, http.StatusBadRequest, "invalid_request_error", "请求参数错误:"+err.Error())
+		return
+	}
+	if !req.ImageGeneration && req.N != nil {
+		openAIError(c, http.StatusBadRequest, "invalid_request_error", "n 仅可用于 image_generation=true 请求")
+		return
+	}
+	if !req.ImageGeneration && strings.TrimSpace(req.ThinkingEffort) != "" {
+		openAIError(c, http.StatusBadRequest, "invalid_request_error", "thinking_effort 仅可用于 image_generation=true 请求")
 		return
 	}
 

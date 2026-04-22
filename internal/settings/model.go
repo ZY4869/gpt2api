@@ -57,6 +57,8 @@ const (
 	GatewayUpstreamTimeoutSec    = "gateway.upstream_timeout_sec"
 	GatewaySSEReadTimeoutSec     = "gateway.sse_read_timeout_sec"
 	GatewayChatImageMixedEnabled = "gateway.chat_image_mixed_enabled"
+	GatewayChatImageThinkingStrategy = "gateway.chat_image_thinking_strategy"
+	GatewayChatImageMaxN         = "gateway.chat_image_max_n"
 	GatewayCooldown429Sec        = "gateway.cooldown_429_sec"
 	GatewayWarnedPauseHours      = "gateway.warned_pause_hours"
 	GatewayDailyUsageRatio       = "gateway.daily_usage_ratio"
@@ -127,6 +129,8 @@ var Defs = []KeyDef{
 	{Key: GatewayUpstreamTimeoutSec, Type: "int", Category: "gateway", Default: "60", Label: "上游请求超时(秒)", Desc: "非流式请求上游响应超时"},
 	{Key: GatewaySSEReadTimeoutSec, Type: "int", Category: "gateway", Default: "120", Label: "SSE 读超时(秒)", Desc: "流式响应无数据时的中断阈值"},
 	{Key: GatewayChatImageMixedEnabled, Type: "bool", Category: "gateway", Default: "false", Label: "启用对话框生图", Desc: "允许 /v1/chat/completions 与 /v1/responses 在同轮对话里触发生图"},
+	{Key: GatewayChatImageThinkingStrategy, Type: "string", Category: "gateway", Default: "picture_v2_thinking", Label: "思考生图策略", Desc: "picture_v2_thinking=稳定模式; native_thinking=抓包实验模式"},
+	{Key: GatewayChatImageMaxN, Type: "int", Category: "gateway", Default: "10", Label: "对话框生图最大张数", Desc: "mixed-mode 每次最多生成的图片数量(1~10)"},
 	{Key: GatewayCooldown429Sec, Type: "int", Category: "gateway", Default: "300", Label: "429 冷却(秒)", Desc: "账号遇 429 后暂停调度"},
 	{Key: GatewayWarnedPauseHours, Type: "int", Category: "gateway", Default: "24", Label: "风险暂停(小时)", Desc: "账号被识别为 warned 时的暂停时长"},
 	{Key: GatewayDailyUsageRatio, Type: "float", Category: "gateway", Default: "0.8", Label: "日用比例阈值", Desc: "0.0~1.0;超过后降低调度优先级"},

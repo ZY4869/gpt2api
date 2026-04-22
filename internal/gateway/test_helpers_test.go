@@ -21,15 +21,29 @@ import (
 )
 
 type fakeSettings struct {
-	mixedEnabled bool
-	upstreamSec  int
-	sseSec       int
+	mixedEnabled     bool
+	upstreamSec      int
+	sseSec           int
+	thinkingStrategy string
+	maxN             int
 }
 
 func (s fakeSettings) GatewayUpstreamTimeoutSec() int { return s.upstreamSec }
 func (s fakeSettings) GatewaySSEReadTimeoutSec() int  { return s.sseSec }
 func (s fakeSettings) GatewayChatImageMixedEnabled() bool {
 	return s.mixedEnabled
+}
+func (s fakeSettings) GatewayChatImageThinkingStrategy() string {
+	if s.thinkingStrategy == "" {
+		return "picture_v2_thinking"
+	}
+	return s.thinkingStrategy
+}
+func (s fakeSettings) GatewayChatImageMaxN() int {
+	if s.maxN <= 0 {
+		return 10
+	}
+	return s.maxN
 }
 
 type fakeModelStore struct {

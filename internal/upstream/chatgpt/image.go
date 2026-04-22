@@ -498,6 +498,7 @@ type PollOpts struct {
 	Interval        time.Duration       // 轮询间隔,默认 6s
 	StableRounds    int                 // 稳定轮数(连续 N 次 sed 不变视为稳定),默认 4
 	PreviewWait     time.Duration       // 第 1 条 tool 出现后等第 2 条的窗口,默认 30s
+	TargetCount     int                 // 期望图片数;未达到前尽量继续轮询
 }
 
 // PollStatus 是 PollConversationForImages 的结果状态。
@@ -525,13 +526,16 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 	if opt.PreviewWait == 0 {
 		opt.PreviewWait = 30 * time.Second
 	}
+	if opt.TargetCount <= 0 {
+		opt.TargetCount = 1
+	}
 	baseline := opt.BaselineToolIDs
 
 	deadline := time.Now().Add(opt.MaxWait)
 	var (
-		stableCount   int
-		lastSedSig    string
-		firstToolTs   time.Time
+		stableCount    int
+		lastAssetSig   string
+		firstToolTs    time.Time
 		consecutive429 int
 	)
 
@@ -594,9 +598,14 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 			}
 		}
 
+		assetSigParts := append(append([]string(nil), allFile...), allSed...)
+		sort.Strings(assetSigParts)
+		assetSig := strings.Join(assetSigParts, ",")
+		totalAssets := len(allFile) + len(allSed)
+
 		// 分支 1:file-service 直出 = IMG2 终稿。
-		// 有 file-service 直出就算命中,把所有 tool 消息累计到的 fid/sid 都带出去。
-		if len(allFile) > 0 {
+		// 若数量已满足目标,立即返回;否则继续等,直到数量稳定后再返回部分结果。
+		if len(allFile) > 0 && totalAssets >= opt.TargetCount {
 			return PollStatusIMG2, allFile, allSed
 		}
 
@@ -611,19 +620,19 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 			firstToolTs = time.Now()
 		}
 
-		// 分支 2:已经 2+ 条 tool → 灰度命中,等 sed 稳定后一并返回。
-		if len(newMsgs) >= 2 {
-			sortedSed := append([]string(nil), allSed...)
-			sort.Strings(sortedSed)
-			sig := strings.Join(sortedSed, ",")
-			if sig == lastSedSig && sig != "" {
+		if assetSig != "" {
+			if assetSig == lastAssetSig {
 				stableCount++
-				if stableCount >= opt.StableRounds {
-					return PollStatusIMG2, allFile, allSed
-				}
 			} else {
 				stableCount = 0
-				lastSedSig = sig
+				lastAssetSig = assetSig
+			}
+		}
+
+		// 分支 2:已经 2+ 条 tool → 灰度命中,等 sed 稳定后一并返回。
+		if len(newMsgs) >= 2 {
+			if stableCount >= opt.StableRounds && assetSig != "" {
+				return PollStatusIMG2, allFile, allSed
 			}
 		} else if !firstToolTs.IsZero() && time.Since(firstToolTs) >= opt.PreviewWait {
 			// 分支 3:只 1 条 tool 且超过窗口 → 非灰度预览。

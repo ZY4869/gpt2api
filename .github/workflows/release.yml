@@ -1,0 +1,67 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release-assets:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build web assets
+        working-directory: web
+        run: npm run build
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release/bin release/assets
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o release/bin/gpt2api ./cmd/server
+          GOBIN="$PWD/release/bin" go install github.com/pressly/goose/v3/cmd/goose@v3.24.3
+          tar -czf "release/assets/gpt2api-web-dist-${GITHUB_REF_NAME}.tar.gz" -C web dist
+          tar -czf "release/assets/gpt2api-linux-amd64-${GITHUB_REF_NAME}.tar.gz" -C release/bin gpt2api goose
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt2api-release-${{ github.ref_name }}
+          path: release/assets/*
+          if-no-files-found: error
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/assets/*

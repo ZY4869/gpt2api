@@ -10,7 +10,6 @@ import (
 	"github.com/432539/gpt2api/internal/apikey"
 	"github.com/432539/gpt2api/internal/image"
 	modelpkg "github.com/432539/gpt2api/internal/model"
-	"github.com/432539/gpt2api/internal/upstream/chatgpt"
 	"github.com/432539/gpt2api/internal/usage"
 	"github.com/432539/gpt2api/internal/user"
 )
@@ -58,14 +57,14 @@ type mixedModeExecFunc func(
 	rec *usage.Log,
 	ak *apikey.APIKey,
 	requestedModel string,
-	messages []chatgpt.ChatMessage,
+	input mixedModeRequestInput,
 ) (*mixedModeExecResult, *mixedModeAPIError)
 
 type mixedModeConversationRunnerFunc func(
 	ctx context.Context,
 	taskID string,
 	chatModel *modelpkg.Model,
-	messages []chatgpt.ChatMessage,
+	req *mixedModePreparedRequest,
 ) (*mixedModeExecResult, *mixedModeAPIError)
 
 var (
@@ -91,22 +90,22 @@ func (h *Handler) callMixedModeChatImage(
 	rec *usage.Log,
 	ak *apikey.APIKey,
 	requestedModel string,
-	messages []chatgpt.ChatMessage,
+	input mixedModeRequestInput,
 ) (*mixedModeExecResult, *mixedModeAPIError) {
 	if h.mixedModeExec != nil {
-		return h.mixedModeExec(c, rec, ak, requestedModel, messages)
+		return h.mixedModeExec(c, rec, ak, requestedModel, input)
 	}
-	return h.executeMixedModeChatImage(c, rec, ak, requestedModel, messages)
+	return h.executeMixedModeChatImage(c, rec, ak, requestedModel, input)
 }
 
 func (h *Handler) callMixedModeConversation(
 	ctx context.Context,
 	taskID string,
 	chatModel *modelpkg.Model,
-	messages []chatgpt.ChatMessage,
+	req *mixedModePreparedRequest,
 ) (*mixedModeExecResult, *mixedModeAPIError) {
 	if h.mixedModeConversationRunner != nil {
-		return h.mixedModeConversationRunner(ctx, taskID, chatModel, messages)
+		return h.mixedModeConversationRunner(ctx, taskID, chatModel, req)
 	}
-	return h.runMixedModeChatImageConversation(ctx, taskID, chatModel, messages)
+	return h.runMixedModeChatImageConversation(ctx, taskID, chatModel, req)
 }

@@ -12,6 +12,8 @@ type ChatCompletionsRequest struct {
 	MaxTokens       int                    `json:"max_tokens,omitempty"`
 	User            string                 `json:"user,omitempty"`
 	ImageGeneration bool                   `json:"image_generation,omitempty"`
+	N               *int                   `json:"n,omitempty"`
+	ThinkingEffort  string                 `json:"thinking_effort,omitempty"`
 	Extra           map[string]interface{} `json:"-"`
 }
 

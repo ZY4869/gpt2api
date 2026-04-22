@@ -45,7 +45,21 @@ func (h *Handler) Responses(c *gin.Context) {
 		h.writeUsage(rec)
 	}()
 
-	if !req.ImageGeneration && !hasImageGenerationTool(req.Tools) {
+	triggered := req.ImageGeneration || hasImageGenerationTool(req.Tools)
+	if req.N != nil && !triggered {
+		rec.ErrorCode = "invalid_request_error"
+		openAIError(c, http.StatusBadRequest, "invalid_request_error",
+			"n 仅可用于 image_generation=true 或 tools:[{type:\"image_generation\"}] 请求")
+		return
+	}
+	if strings.TrimSpace(req.ThinkingEffort) != "" && !triggered {
+		rec.ErrorCode = "invalid_request_error"
+		openAIError(c, http.StatusBadRequest, "invalid_request_error",
+			"thinking_effort 仅可用于 image_generation=true 或 tools:[{type:\"image_generation\"}] 请求")
+		return
+	}
+
+	if !triggered {
 		rec.ErrorCode = "invalid_request_error"
 		openAIError(c, http.StatusBadRequest, "invalid_request_error",
 			"/v1/responses 首版仅支持 image_generation=true 或 tools:[{type:\"image_generation\"}]")
@@ -65,7 +79,11 @@ func (h *Handler) Responses(c *gin.Context) {
 		return
 	}
 
-	res, apiErr := h.callMixedModeChatImage(c, rec, ak, req.Model, messages)
+	res, apiErr := h.callMixedModeChatImage(c, rec, ak, req.Model, mixedModeRequestInput{
+		Messages:       messages,
+		RequestedN:     req.N,
+		ThinkingEffort: req.ThinkingEffort,
+	})
 	if apiErr != nil {
 		rec.Status = usage.StatusFailed
 		rec.ErrorCode = apiErr.Code

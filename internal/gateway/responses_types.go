@@ -12,6 +12,8 @@ type ResponseCreateRequest struct {
 	Instructions    string            `json:"instructions,omitempty"`
 	ImageGeneration bool              `json:"image_generation,omitempty"`
 	Tools           []ResponseToolDef `json:"tools,omitempty"`
+	N               *int              `json:"n,omitempty"`
+	ThinkingEffort  string            `json:"thinking_effort,omitempty"`
 }
 
 type ResponseToolDef struct {

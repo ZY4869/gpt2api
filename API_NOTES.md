@@ -249,7 +249,35 @@ polling 策略（见 `poll_conversation_for_images`）：
 
 ---
 
-## 4. 关键排查经验
+## 4. Thinking 套图补充说明（2026-04-22 抓包）
+
+1. `PATCH /backend-api/settings/user_last_used_model_config?model_slug=gpt-5-4-thinking` 只是网页“最近使用模型”的偏好同步，不是生图成功与否的关键请求。  
+   真正决定请求走哪条通路的，仍然是后续 `f/conversation/prepare` 与 `f/conversation` 的 payload 形态。
+
+2. 新抓包已经证明 thinking 请求会带：
+   - `model: "gpt-5-4-thinking"`
+   - `thinking_effort: "standard"`
+   - `paragen_cot_summary_display_override: "allow"`
+   - `force_parallel_switch: "auto"`
+
+3. 当前抓包**没有证明上游存在原生 `n` 字段**。  
+   这次 3 张套图是通过 prompt 里的“3张即可”驱动的；代理层若要开放 `n`，应由服务端把数量约束编译进 prompt，而不是假设上游支持顶层 `n` 透传。
+
+4. “下载 3 张图”不是单独的批量下载协议。  
+   实际是对每个 `file_id` 逐张调用：
+   - `GET /backend-api/files/download/{file_id}`
+   - 再跟随返回的 `download_url` 获取图片字节
+
+5. 对 thinking 套图建议保留两种请求策略：
+   - `picture_v2_thinking`：`system_hints=["picture_v2"]`，稳定优先
+   - `native_thinking`：顶层 `system_hints=[]`、消息 metadata 走 `selected_sources=[]`，仅用于灰度验证抓包形态
+
+6. `thinking_effort` 只接受 mixed-mode image generation 请求。  
+   当前数量不足率、空结果率、策略命中等观察统一以结构化日志字段为准，不额外引入新的 metrics 框架。
+
+---
+
+## 5. 关键排查经验
 
 1. **额度**：看 `/conversation/init` 响应 `limits_progress[image_gen].remaining`。  
    Plus 日配额约 100~120，每日 UTC 18:15 附近重置一次。

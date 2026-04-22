@@ -22,9 +22,8 @@ import (
 )
 
 const (
-	mixedModeImageEstCount = 4
-	mixedModeRunTimeout    = 6 * time.Minute
-	mixedModePollMaxWait   = 180 * time.Second
+	mixedModeRunTimeout  = 6 * time.Minute
+	mixedModePollMaxWait = 180 * time.Second
 )
 
 type mixedModeExecResult struct {
@@ -50,6 +49,30 @@ func (h *Handler) chatImageEnabled() bool {
 	return h.Settings != nil && h.Settings.GatewayChatImageMixedEnabled()
 }
 
+func (h *Handler) mixedModeMaxN() int {
+	if h.Settings == nil {
+		return defaultMixedModeMaxN
+	}
+	n := h.Settings.GatewayChatImageMaxN()
+	if n <= 0 {
+		return defaultMixedModeMaxN
+	}
+	if n > defaultMixedModeMaxN {
+		return defaultMixedModeMaxN
+	}
+	return n
+}
+
+func (h *Handler) mixedModeImageStrategy(chatModel *modelpkg.Model) string {
+	if !isThinkingModel(chatModel) {
+		return chatgpt.ImageStrategyPictureV2Thinking
+	}
+	if h.Settings == nil {
+		return chatgpt.ImageStrategyPictureV2Thinking
+	}
+	return chatgpt.NormalizeImageStrategy(h.Settings.GatewayChatImageThinkingStrategy())
+}
+
 func (h *Handler) handleChatImageGeneration(c *gin.Context, rec *usage.Log, ak *apikey.APIKey, req *ChatCompletionsRequest) {
 	if req.Stream {
 		rec.Status = usage.StatusFailed
@@ -59,7 +82,11 @@ func (h *Handler) handleChatImageGeneration(c *gin.Context, rec *usage.Log, ak *
 		return
 	}
 
-	res, apiErr := h.callMixedModeChatImage(c, rec, ak, req.Model, req.Messages)
+	res, apiErr := h.callMixedModeChatImage(c, rec, ak, req.Model, mixedModeRequestInput{
+		Messages:       req.Messages,
+		RequestedN:     req.N,
+		ThinkingEffort: req.ThinkingEffort,
+	})
 	if apiErr != nil {
 		rec.Status = usage.StatusFailed
 		rec.ErrorCode = apiErr.Code
@@ -90,7 +117,7 @@ func (h *Handler) executeMixedModeChatImage(
 	rec *usage.Log,
 	ak *apikey.APIKey,
 	requestedModel string,
-	messages []chatgpt.ChatMessage,
+	input mixedModeRequestInput,
 ) (*mixedModeExecResult, *mixedModeAPIError) {
 	if !h.chatImageEnabled() {
 		return nil, &mixedModeAPIError{
@@ -104,15 +131,6 @@ func (h *Handler) executeMixedModeChatImage(
 			Status:  http.StatusNotImplemented,
 			Code:    "image_not_wired",
 			Message: "图片生成能力未完整接入,请联系管理员",
-		}
-	}
-
-	prompt := extractLastUserPrompt(messages)
-	if strings.TrimSpace(prompt) == "" {
-		return nil, &mixedModeAPIError{
-			Status:  http.StatusBadRequest,
-			Code:    "invalid_request_error",
-			Message: "image_generation=true 时,最后一条 user 消息必须提供生图提示词",
 		}
 	}
 
@@ -139,6 +157,12 @@ func (h *Handler) executeMixedModeChatImage(
 		}
 	}
 
+	mixedReq, apiErr := prepareMixedModeRequest(chatModel, input, h.mixedModeMaxN())
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	strategy := h.mixedModeImageStrategy(chatModel)
+
 	imageModel, err := h.resolveMixedModeBillingModel(c.Request.Context())
 	if err != nil {
 		return nil, &mixedModeAPIError{
@@ -163,7 +187,7 @@ func (h *Handler) executeMixedModeChatImage(
 	}
 
 	refID := rec.RequestID
-	estimatedCost := billing.ComputeImageCost(imageModel, mixedModeImageEstCount, ratio)
+	estimatedCost := billing.ComputeImageCost(imageModel, mixedReq.RequestedN, ratio)
 	if estimatedCost > 0 {
 		if err := h.Billing.PreDeduct(c.Request.Context(), ak.UserID, ak.ID, estimatedCost, refID, "chat image mixed prepay"); err != nil {
 			if errors.Is(err, billing.ErrInsufficient) {
@@ -200,8 +224,8 @@ func (h *Handler) executeMixedModeChatImage(
 		UserID:          ak.UserID,
 		KeyID:           ak.ID,
 		ModelID:         imageModel.ID,
-		Prompt:          prompt,
-		N:               1,
+		Prompt:          mixedReq.Prompt,
+		N:               mixedReq.RequestedN,
 		Size:            "1024x1024",
 		Status:          image.StatusDispatched,
 		EstimatedCredit: estimatedCost,
@@ -222,9 +246,15 @@ func (h *Handler) executeMixedModeChatImage(
 		zap.String("request_id", rec.RequestID),
 		zap.String("chat_model", requestedModel),
 		zap.String("task_id", taskID),
+		zap.Int("requested_n", mixedReq.RequestedN),
+		zap.Int("actual_n", 0),
+		zap.String("thinking_effort", mixedReq.ThinkingEffort),
+		zap.String("strategy", strategy),
+		zap.String("conversation_id", ""),
+		zap.Bool("partial_success", false),
 	)
 
-	res, apiErr := h.callMixedModeConversation(runCtx, taskID, chatModel, messages)
+	res, apiErr := h.callMixedModeConversation(runCtx, taskID, chatModel, mixedReq)
 	if apiErr != nil {
 		refund(apiErr.Code, "chat image mixed refund")
 		return nil, apiErr
@@ -249,13 +279,31 @@ func (h *Handler) executeMixedModeChatImage(
 	rec.AccountID = res.AccountID
 	rec.ImageCount = len(res.Images)
 	rec.CreditCost = actualCost
+	partialSuccess := len(res.Images) < mixedReq.RequestedN
+	if partialSuccess {
+		logger.L().Warn("chat mixed image partial success",
+			zap.String("request_id", rec.RequestID),
+			zap.String("task_id", taskID),
+			zap.Int("requested_n", mixedReq.RequestedN),
+			zap.Int("actual_n", len(res.Images)),
+			zap.String("thinking_effort", mixedReq.ThinkingEffort),
+			zap.String("strategy", strategy),
+			zap.String("conversation_id", res.ConversationID),
+			zap.Bool("partial_success", true),
+		)
+	}
 
 	logger.L().Info("chat mixed image success",
 		zap.String("request_id", rec.RequestID),
 		zap.String("task_id", taskID),
 		zap.Uint64("account_id", res.AccountID),
 		zap.String("conversation_id", res.ConversationID),
+		zap.Int("requested_n", mixedReq.RequestedN),
+		zap.Int("actual_n", len(res.Images)),
 		zap.Int("images", len(res.Images)),
+		zap.String("thinking_effort", mixedReq.ThinkingEffort),
+		zap.String("strategy", strategy),
+		zap.Bool("partial_success", partialSuccess),
 		zap.Bool("is_preview", res.IsPreview),
 	)
 	return res, nil
@@ -295,7 +343,7 @@ func (h *Handler) runMixedModeChatImageConversation(
 	ctx context.Context,
 	taskID string,
 	chatModel *modelpkg.Model,
-	messages []chatgpt.ChatMessage,
+	req *mixedModePreparedRequest,
 ) (*mixedModeExecResult, *mixedModeAPIError) {
 	lease, err := h.Scheduler.Dispatch(ctx, modelpkg.TypeChat)
 	if err != nil {
@@ -347,24 +395,29 @@ func (h *Handler) runMixedModeChatImageConversation(
 
 	upstreamModel := chatModel.UpstreamModelSlug
 	if upstreamModel == "" {
-		upstreamModel = "auto"
+		if isThinkingModel(chatModel) {
+			upstreamModel = "gpt-5-4-thinking"
+		} else {
+			upstreamModel = "auto"
+		}
 	}
 	upstreamModel = mapUpstreamModelSlug(upstreamModel)
-	if cr.IsFreeAccount() && upstreamModel != "auto" {
+	if cr.IsFreeAccount() && upstreamModel != "auto" && !isThinkingModel(chatModel) {
 		logger.L().Warn("chat mixed image downgrade free account to auto",
 			zap.Uint64("account_id", lease.Account.ID),
 			zap.String("requested_model", upstreamModel))
 		upstreamModel = "auto"
 	}
 
-	upstreamMessages := cloneMessagesForImageTool(messages)
+	strategy := h.mixedModeImageStrategy(chatModel)
 	opt := chatgpt.FChatOpts{
-		UpstreamModel:   upstreamModel,
-		Messages:        upstreamMessages,
-		ChatToken:       cr.Token,
-		ProofToken:      proofToken,
-		SSETimeout:      h.sseReadTimeout(),
-		EnableImageTool: true,
+		UpstreamModel:  upstreamModel,
+		Messages:       req.Messages,
+		ChatToken:      cr.Token,
+		ProofToken:     proofToken,
+		SSETimeout:     h.sseReadTimeout(),
+		ThinkingEffort: req.ThinkingEffort,
+		ImageStrategy:  strategy,
 	}
 
 	prepCtx, cancelPrep := context.WithTimeout(ctx, 30*time.Second)
@@ -395,6 +448,8 @@ func (h *Handler) runMixedModeChatImageConversation(
 		zap.String("task_id", taskID),
 		zap.Uint64("account_id", lease.Account.ID),
 		zap.String("conversation_id", sseRes.ConversationID),
+		zap.String("strategy", strategy),
+		zap.Int("requested_n", req.RequestedN),
 		zap.Int("sse_files", len(sseRes.FileIDs)),
 		zap.Int("sse_sediments", len(sseRes.SedimentIDs)),
 	)
@@ -414,7 +469,8 @@ func (h *Handler) runMixedModeChatImageConversation(
 			}
 		}
 		status, fids, sids := cli.PollConversationForImages(ctx, res.ConversationID, chatgpt.PollOpts{
-			MaxWait: mixedModePollMaxWait,
+			MaxWait:     mixedModePollMaxWait,
+			TargetCount: req.RequestedN,
 		})
 		switch status {
 		case chatgpt.PollStatusIMG2:
@@ -449,6 +505,10 @@ func (h *Handler) runMixedModeChatImageConversation(
 			Code:    "upstream_image_not_returned",
 			Message: "上游本轮对话未返回图片结果,没有自动降级到旧图片接口",
 		}
+	}
+
+	if len(fileRefs) > req.RequestedN {
+		fileRefs = fileRefs[:req.RequestedN]
 	}
 
 	res.FileRefs = make([]string, 0, len(fileRefs))
@@ -564,16 +624,4 @@ func (h *Handler) mixedModeUpstreamError(
 		Code:    "upstream_error",
 		Message: "上游请求失败:" + err.Error(),
 	}
-}
-
-func cloneMessagesForImageTool(messages []chatgpt.ChatMessage) []chatgpt.ChatMessage {
-	out := make([]chatgpt.ChatMessage, len(messages))
-	copy(out, messages)
-	for i := len(out) - 1; i >= 0; i-- {
-		if out[i].Role == "user" && strings.TrimSpace(out[i].Content) != "" {
-			out[i].Content = maybeAppendClaritySuffix(out[i].Content)
-			break
-		}
-	}
-	return out
 }

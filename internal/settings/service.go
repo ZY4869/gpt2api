@@ -221,6 +221,23 @@ func (s *Service) GatewaySSEReadTimeoutSec() int {
 	return n
 }
 func (s *Service) GatewayChatImageMixedEnabled() bool { return s.GetBool(GatewayChatImageMixedEnabled) }
+func (s *Service) GatewayChatImageThinkingStrategy() string {
+	v := strings.TrimSpace(s.GetString(GatewayChatImageThinkingStrategy))
+	if v == "" {
+		return "picture_v2_thinking"
+	}
+	return v
+}
+func (s *Service) GatewayChatImageMaxN() int {
+	n := int(s.GetInt(GatewayChatImageMaxN))
+	if n <= 0 {
+		return 10
+	}
+	if n > 10 {
+		return 10
+	}
+	return n
+}
 func (s *Service) Cooldown429Sec() int {
 	n := int(s.GetInt(GatewayCooldown429Sec))
 	if n <= 0 {
