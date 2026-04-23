@@ -84,7 +84,7 @@
 | 分类 | 能力 |
 |------|------|
 | **上游协议** | 完整逆向 `chatgpt.com` `f/conversation` 两步 sentinel(`/prepare` + `/finalize`)、PoW、`conduit_token`、全套 `oai-*` / `Sec-Ch-Ua-*` 指纹头 |
-| **图片生成** | 文生图、**图生图 / 多图参考**、**IMG2 灰度命中**(单次调用返回多张高清终稿)、**preview_only 自动重试**、轮询 + SSE 直出双通道 |
+| **图片生成** | 文生图、**图生图 / 多图参考**、**IMG2 灰度命中**、`n>1` **并发聚合出图**、**preview_only 自动重试**、轮询 + SSE 直出双通道 |
 | **账号池** | JSON / AT / RT / ST 四种方式批量导入,**自动刷新**、**额度探测**、**风控熔断**、按账号稳定绑定 `oai-device-id` / `oai-session-id` |
 | **代理池** | 支持 HTTP / SOCKS5,健康分自动探测,按账号强绑定代理,避免 IP 指纹混用 |
 | **调度器** | 串行 lease + Redis 分布式锁,`min_interval_sec` 单号最小间隔、`daily_usage_ratio` 日熔断、`cooldown_429_sec` 限速退避 |
@@ -181,7 +181,7 @@ flowchart LR
 3. Scheduler 从账号池挑一个 `idle` 且满足 `min_interval_sec` 的账号,拿 Redis 锁建立 lease;
 4. 通过账号绑定的代理,走 `utls` TLS 指纹,按真实 Edge 143 浏览器的 header/payload 访问 `chatgpt.com`;
 5. 两步 sentinel 换 chat-requirements token → `/f/conversation/prepare` 拿 `conduit_token` → SSE 上游生图;
-6. 解析 tool message 拿 `fids` / `sids`,若是 `preview_only` 则在同一对话里重试最多 3 次争取 IMG2 灰度;
+6. 解析 tool message 拿 `fids` / `sids`;单张请求若是 `preview_only` 则在同一对话里重试最多 3 次争取 IMG2 灰度,`n>1` 会在同一账号 lease 下拆成多个独立子任务并聚合;
 7. 所有图片 URL 经 HMAC 签名,返回 `https://<your-domain>/p/img/<task>/<idx>?exp=…&sig=…`;
 8. 扣费结算 + 写 usage_logs + 释放 lease + 更新账号状态。
 
@@ -565,11 +565,11 @@ ORDER BY img2_rate_pct DESC;
 
 | 场景 | 调用方式 | 实际并发 |
 |------|---------|---------|
-| **单请求 N 张** | `{"n": 4}` | 1 个账号跑 1 个会话,**IMG2 命中时会把 2 张放到同一 tool message,框架自动聚合到 `image_urls`** |
+| **单请求 N 张** | `{"n": 4}` | 1 个账号 lease 下并发拆成 N 个独立 picture_v2 子任务,按实际成功张数聚合返回 |
 | **多请求并发** | SDK 线程池同时发 K 个请求 | K 个账号 lease 并行,受限于账号池数 × `min_interval_sec` |
 | **纯异步任务池** | `{"async": true}` 提交 + 轮询 | 后端 Worker 池消费,适合 1000+ 条 prompt 的大批量场景 |
 
-**单请求多张(`n`)**:IMG2 灰度账号下,`n=2` 通常一次就到位;`n>2` 会被框架拆成多轮 follow-up 请求在**同一会话**里完成,共享一个 account lease,避免占用多个账号。
+**单请求多张(`n`)**:后端会在**同一账号 lease** 下拆成 N 个独立子任务并发执行,每个子任务目标 1 张图;最终按实际成功张数聚合返回,避免为单个请求占用多个账号。
 
 **多请求并发(脚本示例)**:
 

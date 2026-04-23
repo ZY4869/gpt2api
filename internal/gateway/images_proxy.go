@@ -35,6 +35,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/432539/gpt2api/internal/image"
 	"github.com/432539/gpt2api/internal/upstream/chatgpt"
 	"github.com/432539/gpt2api/pkg/logger"
 )
@@ -128,8 +129,8 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
-	ref := fids[idx] // 可能是 "sed:xxxx" 或 "xxxx"
-	if t.AccountID == 0 || h.ImageAccResolver == nil {
+	storedRef := image.ResolveStoredRef(fids[idx], t.AccountID, t.ConversationID)
+	if storedRef.Ref == "" || storedRef.AccountID == 0 || h.ImageAccResolver == nil {
 		c.AbortWithStatus(http.StatusServiceUnavailable)
 		return
 	}
@@ -137,14 +138,14 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
 
-	at, deviceID, cookies, err := h.ImageAccResolver.AuthToken(ctx, t.AccountID)
+	at, deviceID, cookies, err := h.ImageAccResolver.AuthToken(ctx, storedRef.AccountID)
 	if err != nil {
 		logger.L().Warn("image proxy resolve account",
-			zap.Error(err), zap.Uint64("account_id", t.AccountID))
+			zap.Error(err), zap.Uint64("account_id", storedRef.AccountID))
 		c.AbortWithStatus(http.StatusBadGateway)
 		return
 	}
-	proxyURL := h.ImageAccResolver.ProxyURL(ctx, t.AccountID)
+	proxyURL := h.ImageAccResolver.ProxyURL(ctx, storedRef.AccountID)
 
 	cli, err := chatgpt.New(chatgpt.Options{
 		AuthToken: at,
@@ -159,10 +160,10 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 		return
 	}
 
-	signedURL, err := cli.ImageDownloadURL(ctx, t.ConversationID, ref)
+	signedURL, err := cli.ImageDownloadURL(ctx, storedRef.ConversationID, storedRef.Ref)
 	if err != nil {
 		logger.L().Warn("image proxy download_url",
-			zap.Error(err), zap.String("task_id", taskID), zap.String("ref", ref))
+			zap.Error(err), zap.String("task_id", taskID), zap.String("ref", storedRef.Ref))
 		c.AbortWithStatus(http.StatusBadGateway)
 		return
 	}

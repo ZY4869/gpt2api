@@ -47,7 +47,7 @@ type RunOptions struct {
 	ModelID           uint64
 	UpstreamModel     string // 默认 "auto"(由上游根据 system_hints 挑选图像模型)
 	Prompt            string
-	N                 int              // 目前上游单次返回固定,N 仅用于计费
+	N                 int              // 目标图片张数
 	MaxAttempts       int              // 灰度未命中时最大重试,默认 2
 	PerAttemptTimeout time.Duration    // 单次尝试总超时,默认 5min
 	PollMaxWait       time.Duration    // 轮询最长等待,默认 300s
@@ -59,7 +59,7 @@ type RunResult struct {
 	Status         string // success / failed
 	ConversationID string
 	AccountID      uint64
-	FileIDs        []string // chatgpt.com 侧的原始 ref("sed:" 前缀表示 sediment)
+	FileIDs        []string // 内部存储 ref;可能带 account/conversation 元信息
 	SignedURLs     []string // 直接可访问的签名 URL(15 分钟有效)
 	ContentTypes   []string
 	ErrorCode      string
@@ -108,7 +108,7 @@ func (r *Runner) Run(ctx context.Context, opt RunOptions) *RunResult {
 		}
 
 		attemptCtx, cancel := context.WithTimeout(ctx, opt.PerAttemptTimeout)
-		ok, status, err := r.runOnce(attemptCtx, opt, result)
+		ok, status, err := r.runAttempt(attemptCtx, opt, result)
 		cancel()
 
 		if ok {
@@ -123,12 +123,13 @@ func (r *Runner) Run(ctx context.Context, opt RunOptions) *RunResult {
 		}
 		result.ErrorCode = status
 
-		// preview_only:换账号重试;其他错误直接退出
-		if status != ErrPreviewOnly {
+		if !retryableErrorCode(status) {
 			break
 		}
-		logger.L().Info("image runner preview_only, retry with another account",
-			zap.String("task_id", opt.TaskID), zap.Int("attempt", attempt))
+		logger.L().Info("image runner retry with another account",
+			zap.String("task_id", opt.TaskID),
+			zap.Int("attempt", attempt),
+			zap.String("retry_reason", status))
 	}
 
 	result.DurationMs = time.Since(start).Milliseconds()
@@ -145,6 +146,17 @@ func (r *Runner) Run(ctx context.Context, opt RunOptions) *RunResult {
 	return result
 }
 
+func retryableErrorCode(code string) bool {
+	return code == ErrPreviewOnly || code == ErrNetworkTransient
+}
+
+func (r *Runner) runAttempt(ctx context.Context, opt RunOptions, result *RunResult) (bool, string, error) {
+	if opt.N > 1 {
+		return r.runParallel(ctx, opt, result)
+	}
+	return r.runOnce(ctx, opt, result)
+}
+
 // runOnce 一次完整的尝试。返回 (ok, errorCode, err)。
 // result 会被就地更新(ConversationID / FileIDs / SignedURLs / AccountID 等)。
 func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult) (bool, string, error) {
@@ -159,6 +171,10 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	defer func() {
 		_ = lease.Release(context.Background())
 	}()
+	return r.runWithLease(ctx, opt, result, lease)
+}
+
+func (r *Runner) runWithLease(ctx context.Context, opt RunOptions, result *RunResult, lease *scheduler.Lease) (bool, string, error) {
 	result.AccountID = lease.Account.ID
 	// 立刻把 account_id 写回 image_tasks,供后续图片代理端点按 task_id 解出 AT。
 	// MarkRunning 在 status=running 时 WHERE 不命中,所以用专门的 SetAccount。
@@ -503,10 +519,33 @@ loop:
 		zap.Int("signed_count", len(signedURLs)),
 	)
 
-	result.FileIDs = fileRefs
+	storedRefs := make([]string, 0, len(fileRefs))
+	for _, ref := range fileRefs {
+		storedRefs = append(storedRefs, EncodeStoredRef(lease.Account.ID, convID, ref))
+	}
+	storedRefs, signedURLs, contentTypes = capResultAssets(opt.N, storedRefs, signedURLs, contentTypes)
+	result.FileIDs = storedRefs
 	result.SignedURLs = signedURLs
 	result.ContentTypes = contentTypes
 	return true, "", nil
+}
+
+func capResultAssets(limit int, refs, urls, contentTypes []string) ([]string, []string, []string) {
+	if limit <= 0 {
+		return refs, urls, contentTypes
+	}
+	max := minInt(limit, len(refs), len(urls), len(contentTypes))
+	return refs[:max], urls[:max], contentTypes[:max]
+}
+
+func minInt(values ...int) int {
+	out := values[0]
+	for _, value := range values[1:] {
+		if value < out {
+			out = value
+		}
+	}
+	return out
 }
 
 // buildToolBaseline 从 conversation mapping 里提取所有已存在的 image_gen tool 消息 id,
@@ -538,8 +577,15 @@ func (r *Runner) classifyUpstream(err error) string {
 		}
 		return ErrUpstream
 	}
-	if strings.Contains(err.Error(), "deadline exceeded") {
+	msg := err.Error()
+	if strings.Contains(msg, "deadline exceeded") {
 		return ErrPollTimeout
+	}
+	if strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "broken pipe") {
+		return ErrNetworkTransient
 	}
 	return ErrUpstream
 }

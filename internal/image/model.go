@@ -25,58 +25,59 @@ const (
 
 // 错误码(短字符串,便于排查 & 计费对账)。
 const (
-	ErrUnknown         = "unknown"
-	ErrNoAccount       = "no_available_account"
-	ErrAuthRequired    = "auth_required"
-	ErrRateLimited     = "rate_limited"
-	ErrPOWTimeout      = "pow_timeout"
-	ErrPOWFailed       = "pow_failed"
-	ErrTurnstile       = "turnstile_required"
-	ErrUpstream        = "upstream_error"
-	ErrPreviewOnly     = "preview_only" // 非灰度桶,未产出 IMG2 终稿
-	ErrPollTimeout     = "poll_timeout"
-	ErrDownload        = "download_failed"
-	ErrInvalidResponse = "invalid_response"
+	ErrUnknown          = "unknown"
+	ErrNoAccount        = "no_available_account"
+	ErrAuthRequired     = "auth_required"
+	ErrRateLimited      = "rate_limited"
+	ErrNetworkTransient = "network_transient" // EOF / reset / broken pipe 等瞬态网络错误
+	ErrPOWTimeout       = "pow_timeout"
+	ErrPOWFailed        = "pow_failed"
+	ErrTurnstile        = "turnstile_required"
+	ErrUpstream         = "upstream_error"
+	ErrPreviewOnly      = "preview_only" // 非灰度桶,未产出 IMG2 终稿
+	ErrPollTimeout      = "poll_timeout"
+	ErrDownload         = "download_failed"
+	ErrInvalidResponse  = "invalid_response"
 )
 
 // Task 对应 image_tasks 表。
 type Task struct {
-	ID              uint64    `db:"id"`
-	TaskID          string    `db:"task_id"` // 对外 id:img_xxx
-	UserID          uint64    `db:"user_id"`
-	KeyID           uint64    `db:"key_id"`
-	ModelID         uint64    `db:"model_id"`
-	AccountID       uint64    `db:"account_id"`
-	Prompt          string    `db:"prompt"`
-	N               int       `db:"n"`
-	Size            string    `db:"size"`
-	Status          string    `db:"status"`
-	ConversationID  string    `db:"conversation_id"`
-	FileIDs         []byte    `db:"file_ids"`    // JSON 数组字符串
-	ResultURLs      []byte    `db:"result_urls"` // JSON 数组字符串(签名 URL)
-	Error           string    `db:"error"`
-	EstimatedCredit int64     `db:"estimated_credit"`
-	CreditCost      int64     `db:"credit_cost"`
-	CreatedAt       time.Time `db:"created_at"`
-	StartedAt       *time.Time `db:"started_at"`
-	FinishedAt      *time.Time `db:"finished_at"`
+	ID              uint64     `db:"id" json:"id"`
+	TaskID          string     `db:"task_id" json:"task_id"`
+	UserID          uint64     `db:"user_id" json:"user_id"`
+	KeyID           uint64     `db:"key_id" json:"key_id"`
+	ModelID         uint64     `db:"model_id" json:"model_id"`
+	AccountID       uint64     `db:"account_id" json:"account_id"`
+	Prompt          string     `db:"prompt" json:"prompt"`
+	N               int        `db:"n" json:"n"`
+	Size            string     `db:"size" json:"size"`
+	Status          string     `db:"status" json:"status"`
+	ConversationID  string     `db:"conversation_id" json:"conversation_id"`
+	FileIDs         []byte     `db:"file_ids" json:"-"`
+	ResultURLs      []byte     `db:"result_urls" json:"-"`
+	Error           string     `db:"error" json:"error"`
+	EstimatedCredit int64      `db:"estimated_credit" json:"estimated_credit"`
+	CreditCost      int64      `db:"credit_cost" json:"credit_cost"`
+	CreatedAt       time.Time  `db:"created_at" json:"created_at"`
+	StartedAt       *time.Time `db:"started_at" json:"started_at,omitempty"`
+	FinishedAt      *time.Time `db:"finished_at" json:"finished_at,omitempty"`
 }
 
 // Result 是 Runner 返回给网关/客户端的生图结果。
 type Result struct {
-	TaskID         string         `json:"task_id"`
-	Status         string         `json:"status"`
-	ConversationID string         `json:"conversation_id,omitempty"`
-	Images         []ResultImage  `json:"images,omitempty"`
-	ErrorCode      string         `json:"error_code,omitempty"`
-	ErrorMessage   string         `json:"error_message,omitempty"`
-	CreditCost     int64          `json:"credit_cost"`
+	TaskID         string        `json:"task_id"`
+	Status         string        `json:"status"`
+	ConversationID string        `json:"conversation_id,omitempty"`
+	Images         []ResultImage `json:"images,omitempty"`
+	ErrorCode      string        `json:"error_code,omitempty"`
+	ErrorMessage   string        `json:"error_message,omitempty"`
+	CreditCost     int64         `json:"credit_cost"`
 }
 
 // ResultImage 单张生图。
 type ResultImage struct {
-	URL         string `json:"url"`          // 上游签名直链(短期有效,通常 15 分钟)
-	FileID      string `json:"file_id"`      // chatgpt.com file-service id(纯 id,不含 sed:)
+	URL         string `json:"url"`     // 上游签名直链(短期有效,通常 15 分钟)
+	FileID      string `json:"file_id"` // chatgpt.com file-service id(纯 id,不含 sed:)
 	IsSediment  bool   `json:"is_sediment,omitempty"`
 	ContentType string `json:"content_type,omitempty"`
 }

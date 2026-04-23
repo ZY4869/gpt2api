@@ -263,7 +263,7 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 		if res.ErrorCode == image.ErrNoAccount {
 			httpStatus = http.StatusServiceUnavailable
 		}
-		if res.ErrorCode == image.ErrRateLimited {
+		if res.ErrorCode == image.ErrRateLimited || res.ErrorCode == image.ErrNetworkTransient {
 			httpStatus = http.StatusServiceUnavailable
 		}
 		openAIError(c, httpStatus, ifEmpty(res.ErrorCode, "upstream_error"),
@@ -298,7 +298,7 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 	for i := range res.SignedURLs {
 		d := ImageGenData{URL: BuildImageProxyURL(taskID, i, ImageProxyTTL)}
 		if i < len(res.FileIDs) {
-			d.FileID = strings.TrimPrefix(res.FileIDs[i], "sed:")
+			d.FileID = image.PublicFileID(res.FileIDs[i])
 		}
 		out.Data = append(out.Data, d)
 	}
@@ -341,7 +341,7 @@ func (h *ImagesHandler) ImageTask(c *gin.Context) {
 	for i := range urls {
 		d := ImageGenData{URL: BuildImageProxyURL(t.TaskID, i, ImageProxyTTL)}
 		if i < len(fileIDs) {
-			d.FileID = strings.TrimPrefix(fileIDs[i], "sed:")
+			d.FileID = image.PublicFileID(fileIDs[i])
 		}
 		data = append(data, d)
 	}
@@ -544,6 +544,8 @@ func localizeImageErr(code, raw string) string {
 		zh = "账号池暂无可用账号,请稍后重试"
 	case image.ErrRateLimited:
 		zh = "上游风控,请稍后再试"
+	case image.ErrNetworkTransient:
+		zh = "上游网络波动,请稍后重试"
 	case image.ErrPreviewOnly:
 		zh = "上游仅返回预览,请稍后重试(已尝试切换账号)"
 	case image.ErrUnknown, "":
@@ -808,7 +810,7 @@ func (h *ImagesHandler) ImageEdits(c *gin.Context) {
 	for i := range res.SignedURLs {
 		d := ImageGenData{URL: BuildImageProxyURL(taskID, i, ImageProxyTTL)}
 		if i < len(res.FileIDs) {
-			d.FileID = strings.TrimPrefix(res.FileIDs[i], "sed:")
+			d.FileID = image.PublicFileID(res.FileIDs[i])
 		}
 		out.Data = append(out.Data, d)
 	}
