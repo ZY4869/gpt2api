@@ -462,6 +462,44 @@ event: response.completed | response.in_progress
 - mixed-mode 仍保留对话模型语义,对外 `model` 不变,内部只用默认图片模型配置做计费和 `image_tasks` 落库映射
 - thinking mixed-mode 默认使用更长的执行/轮询超时,并可通过 `gateway.chat_image_run_timeout_sec`、`gateway.chat_image_poll_max_wait_sec`、`gateway.chat_image_thinking_run_timeout_sec`、`gateway.chat_image_thinking_poll_max_wait_sec` 单独调优
 
+**当前参数兼容矩阵(截至 2026-04-23)**:
+
+`/v1/chat/completions`
+
+| 参数 | 当前状态 | 说明 |
+|---|---|---|
+| `model` | 已支持 | 必填;会做模型白名单、模型表校验,必要时映射为上游真实 slug |
+| `messages` | 已支持(文本子集) | 必填;当前 `messages[].content` 仅支持字符串,不支持 OpenAI 官方多段 `content[]` / 多模态对象 |
+| `stream` | 已支持 | `true` 时走 SSE 转发 |
+| `image_generation` | 已支持 | `true` 时进入 mixed-mode 生图链路 |
+| `n` | 条件支持 | 仅允许 `image_generation=true`;否则返回 400 |
+| `thinking_effort` | 条件支持 | 仅允许 `image_generation=true`;在 thinking mixed-mode 链路透传到上游 |
+| `max_tokens` | 部分支持 | 当前只用于预估计费和 TPM 额度,不作为上游硬输出上限 |
+| `temperature` / `top_p` / `user` | 已接收,暂未生效 | 当前不会透传到 chatgpt.com 上游 |
+| 其他未声明字段 | 未支持 | 例如 `response_format`、`presence_penalty`、`frequency_penalty`、`seed`、`logprobs` 等,当前不会生效 |
+
+`/v1/responses`
+
+| 参数 | 当前状态 | 说明 |
+|---|---|---|
+| `model` | 已支持 | 必填 |
+| `input` | 已支持(文本子集) | 必填;支持字符串 / 单消息对象 / 消息数组,但当前只提取文本内容 |
+| `instructions` | 已支持 | 会转成首条 `system` 消息 |
+| `stream` | 已支持 | 当前仅 mixed-mode SSE 事件流 |
+| `image_generation` | 已支持 | 开启 mixed-mode 生图 |
+| `tools` | 部分支持 | 当前只识别 `[{"type":"image_generation"}]`;其他 tools 不会生效 |
+| `n` | 条件支持 | 仅允许 `image_generation=true` 或 `tools:[{"type":"image_generation"}]`;否则返回 400 |
+| `thinking_effort` | 条件支持 | 仅允许 image mixed-mode;会透传到 thinking mixed-mode 上游 |
+| `temperature` / `user` | 已接收,暂未生效 | 当前不会透传到上游 |
+| 其他 responses 参数 | 未支持 | 例如 `max_output_tokens`、`tool_choice`、`parallel_tool_calls`、`metadata`、`modalities`、`response_format` 等,当前不会生效 |
+
+兼容性备注:
+
+- `/v1/responses` 首版目前只支持生图子集;如果既没有 `image_generation=true`,也没有 `tools:[{"type":"image_generation"}]`,会直接返回 400
+- `/v1/chat/completions` 目前还是文本消息子集,如果下游直接发送官方多模态 `messages[].content[]`,大概率会在参数绑定阶段报错
+- `/v1/responses input` 里的结构化内容当前只提取 `text`;`input_image`、`image_url`、音频等非文本 part 不会参与上游请求
+- 如果业务需要“严格透传 OpenAI 参数”,需要继续补齐请求体绑定、参数校验和上游 payload 组装,不能只改文档
+
 发布与观测建议:
 
 - 先只打开后端 `gateway.chat_image_mixed_enabled`,用 API Key 直接验证 `/v1/chat/completions` 与 `/v1/responses`
