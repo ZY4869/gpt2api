@@ -217,6 +217,109 @@ func TestResponsesMixedMode_Golden(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsMixedModeInProgressResponse(t *testing.T) {
+	withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "mixed-chat-pending")
+	ak := &apikey.APIKey{ID: 7, UserID: 9, Enabled: true}
+	usageSink := &fakeUsageStore{}
+	h := &Handler{
+		Usage:    usageSink,
+		Settings: fakeSettings{mixedEnabled: true},
+		mixedModeExec: func(_ *gin.Context, rec *usage.Log, _ *apikey.APIKey, _ string, _ mixedModeRequestInput) (*mixedModeExecResult, *mixedModeAPIError) {
+			rec.Type = usage.TypeImage
+			rec.Status = usage.StatusPending
+			return &mixedModeExecResult{
+				Status:        mixedModeExecStatusInProgress,
+				AssistantText: "图片任务已受理，正在继续补齐。",
+				Images: []MixedModeImage{{
+					URL:         "/p/img/task_pending/0?exp=1710892800000&sig=chatpending",
+					FileID:      "file_pending_1",
+					ContentType: "image/png",
+					TaskID:      "task_pending",
+				}},
+				ImageTask: &MixedModeImageTask{
+					TaskID:         "task_pending",
+					Status:         "running",
+					RequestedN:     2,
+					ReadyN:         1,
+					ConversationID: "conv_pending_chat",
+				},
+			}, nil
+		},
+	}
+	c, w := newJSONContext(t, "/v1/chat/completions", `{"model":"gpt-5-thinking","image_generation":true,"stream":false,"messages":[{"role":"user","content":"生成两张连续故事图"}]}`, ak)
+	h.ChatCompletions(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var resp ChatCompletionResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ImageTask == nil || resp.ImageTask.Status != "running" || resp.ImageTask.ReadyN != 1 {
+		t.Fatalf("image_task = %#v", resp.ImageTask)
+	}
+	if len(resp.Images) != 1 {
+		t.Fatalf("images = %#v", resp.Images)
+	}
+	if len(usageSink.rows) != 1 || usageSink.rows[0].Status != usage.StatusPending {
+		t.Fatalf("usage rows = %#v", usageSink.rows)
+	}
+}
+
+func TestResponsesMixedModeInProgressResponse(t *testing.T) {
+	withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "mixed-response-pending", "mixed-response-pending-message", "mixed-response-pending-image")
+	ak := &apikey.APIKey{ID: 7, UserID: 9, Enabled: true}
+	usageSink := &fakeUsageStore{}
+	h := &Handler{
+		Usage:    usageSink,
+		Settings: fakeSettings{mixedEnabled: true},
+		mixedModeExec: func(_ *gin.Context, rec *usage.Log, _ *apikey.APIKey, _ string, _ mixedModeRequestInput) (*mixedModeExecResult, *mixedModeAPIError) {
+			rec.Type = usage.TypeImage
+			rec.Status = usage.StatusPending
+			return &mixedModeExecResult{
+				Status:        mixedModeExecStatusInProgress,
+				ReasoningText: "先稳定分镜，再继续等第二张图完成。",
+				Images: []MixedModeImage{{
+					URL:         "/p/img/task_resp_pending/0?exp=1710892800000&sig=resppending",
+					FileID:      "file_resp_pending_1",
+					ContentType: "image/png",
+					TaskID:      "task_resp_pending",
+				}},
+				ImageTask: &MixedModeImageTask{
+					TaskID:         "task_resp_pending",
+					Status:         "running",
+					RequestedN:     2,
+					ReadyN:         1,
+					ConversationID: "conv_pending_resp",
+				},
+			}, nil
+		},
+	}
+	c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-thinking","input":"生成两张连续故事图","tools":[{"type":"image_generation"}],"stream":false}`, ak)
+	h.Responses(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var resp ResponseObject
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "in_progress" {
+		t.Fatalf("status = %q, want in_progress", resp.Status)
+	}
+	if resp.ImageTask == nil || resp.ImageTask.Status != "running" {
+		t.Fatalf("image_task = %#v", resp.ImageTask)
+	}
+	if len(resp.Output) == 0 || resp.Output[len(resp.Output)-1].Status != "in_progress" {
+		t.Fatalf("output = %#v", resp.Output)
+	}
+	if len(usageSink.rows) != 1 || usageSink.rows[0].Status != usage.StatusPending {
+		t.Fatalf("usage rows = %#v", usageSink.rows)
+	}
+}
+
 func TestMixedModeStreamingProtocols(t *testing.T) {
 	ak := &apikey.APIKey{ID: 7, UserID: 9, Enabled: true}
 
@@ -377,6 +480,63 @@ func TestMixedModeStreamingFailureEvents(t *testing.T) {
 			t.Fatalf("usage rows = %#v", usageSink.rows)
 		}
 	})
+}
+
+func TestMixedModeStreamingInProgressEvents(t *testing.T) {
+	ak := &apikey.APIKey{ID: 7, UserID: 9, Enabled: true}
+	chatModel := &modelpkg.Model{ID: 11, Slug: "gpt-5-thinking", Type: modelpkg.TypeChat, Enabled: true}
+	imageModel := &modelpkg.Model{ID: 22, Slug: "gpt-image-2", Type: modelpkg.TypeImage, Enabled: true, ImagePricePerCall: 300}
+
+	withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "resp_stream_pending", "resp_stream_pending_message", "resp_stream_pending_image")
+	withFrozenImageTaskIDs(t, "task_stream_pending")
+	usageSink := &fakeUsageStore{}
+	h := &Handler{
+		Usage:    usageSink,
+		Settings: fakeSettings{mixedEnabled: true},
+		Models: &fakeModelStore{
+			bySlug:  map[string]*modelpkg.Model{"gpt-5-thinking": chatModel, "gpt-image-2": imageModel},
+			enabled: []*modelpkg.Model{chatModel, imageModel},
+		},
+		Billing: &fakeBillingStore{},
+		Keys:    fakeKeyStore{dao: &fakeKeyDAO{}},
+		mixedModeConversationStreamRunner: func(_ context.Context, taskID string, _ *modelpkg.Model, _ *mixedModePreparedRequest, sink mixedModeStreamSink) (*mixedModeExecResult, *mixedModeAPIError) {
+			sink.OnReasoningDelta("先把首张图稳定下来。")
+			return &mixedModeExecResult{
+				Status:        mixedModeExecStatusInProgress,
+				TaskID:        taskID,
+				AccountID:     99,
+				ReasoningText: "先把首张图稳定下来。",
+				Images: []MixedModeImage{{
+					URL:         "/p/img/task_stream_pending/0?exp=1710892800000&sig=respstreaminprogress",
+					FileID:      "file_stream_pending_1",
+					ContentType: "image/png",
+					TaskID:      taskID,
+				}},
+				ImageTask: &MixedModeImageTask{
+					TaskID:         taskID,
+					Status:         "running",
+					RequestedN:     2,
+					ReadyN:         1,
+					ConversationID: "conv_stream_pending",
+				},
+			}, nil
+		},
+	}
+	h.Images = &ImagesHandler{
+		Handler:          h,
+		DAO:              &fakeImageTaskStore{},
+		ImageAccResolver: stubImageAccountResolver{},
+	}
+
+	c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-thinking","input":"生成两张连续故事图","tools":[{"type":"image_generation"}],"stream":true}`, ak)
+	h.Responses(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	assertTextGolden(t, w.Body.String(), "responses_mixed_stream_in_progress.sse")
+	if len(usageSink.rows) != 1 || usageSink.rows[0].Status != usage.StatusPending {
+		t.Fatalf("usage rows = %#v", usageSink.rows)
+	}
 }
 
 func TestMixedModeRejectsNWithoutImageGeneration(t *testing.T) {

@@ -160,6 +160,7 @@ const maxTop = computed(() => topModels.value.reduce((x, r) => Math.max(x, r.req
 const statusMap: Record<string, { tag: 'success' | 'danger' | 'warning' | 'info'; label: string }> = {
   success: { tag: 'success', label: '成功' },
   failed: { tag: 'danger', label: '失败' },
+  pending: { tag: 'warning', label: '处理中' },
   partial: { tag: 'warning', label: '部分' },
 }
 function statusTag(s: string) { return statusMap[s]?.tag || 'info' }

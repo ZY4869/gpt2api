@@ -43,11 +43,14 @@ type keyStore interface {
 
 type usageStore interface {
 	Write(row *usage.Log)
+	Finalize(ctx context.Context, requestID string, patch usage.FinalizePatch) error
 }
 
 type imageTaskStore interface {
 	Create(ctx context.Context, t *image.Task) error
+	MarkRunning(ctx context.Context, taskID string, accountID uint64, convID string) error
 	SetAccount(ctx context.Context, taskID string, accountID uint64) error
+	UpdateProgress(ctx context.Context, taskID, convID string, fileIDs, resultURLs []string) error
 	MarkSuccess(ctx context.Context, taskID, convID string, fileIDs, resultURLs []string, creditCost int64) error
 	UpdateCost(ctx context.Context, taskID string, cost int64) error
 	MarkFailed(ctx context.Context, taskID, errorCode string) error

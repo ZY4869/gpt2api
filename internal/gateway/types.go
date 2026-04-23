@@ -26,15 +26,24 @@ type MixedModeImage struct {
 	IsPreview   bool   `json:"is_preview,omitempty"`
 }
 
+type MixedModeImageTask struct {
+	TaskID         string `json:"task_id"`
+	Status         string `json:"status"`
+	RequestedN     int    `json:"requested_n"`
+	ReadyN         int    `json:"ready_n"`
+	ConversationID string `json:"conversation_id,omitempty"`
+}
+
 // ChatCompletionResponse 非流式响应。
 type ChatCompletionResponse struct {
-	ID      string                 `json:"id"`
-	Object  string                 `json:"object"`
-	Created int64                  `json:"created"`
-	Model   string                 `json:"model"`
-	Choices []ChatCompletionChoice `json:"choices"`
-	Usage   ChatCompletionUsage    `json:"usage"`
-	Images  []MixedModeImage       `json:"images,omitempty"`
+	ID        string                 `json:"id"`
+	Object    string                 `json:"object"`
+	Created   int64                  `json:"created"`
+	Model     string                 `json:"model"`
+	Choices   []ChatCompletionChoice `json:"choices"`
+	Usage     ChatCompletionUsage    `json:"usage"`
+	Images    []MixedModeImage       `json:"images,omitempty"`
+	ImageTask *MixedModeImageTask    `json:"image_task,omitempty"`
 }
 
 type ChatCompletionChoice struct {
@@ -52,12 +61,13 @@ type ChatCompletionUsage struct {
 
 // ChatCompletionChunk 流式 chunk。
 type ChatCompletionChunk struct {
-	ID      string                      `json:"id"`
-	Object  string                      `json:"object"`
-	Created int64                       `json:"created"`
-	Model   string                      `json:"model"`
-	Choices []ChatCompletionChunkChoice `json:"choices"`
-	Images  []MixedModeImage            `json:"images,omitempty"`
+	ID        string                      `json:"id"`
+	Object    string                      `json:"object"`
+	Created   int64                       `json:"created"`
+	Model     string                      `json:"model"`
+	Choices   []ChatCompletionChunkChoice `json:"choices"`
+	Images    []MixedModeImage            `json:"images,omitempty"`
+	ImageTask *MixedModeImageTask         `json:"image_task,omitempty"`
 }
 
 type ChatCompletionChunkChoice struct {

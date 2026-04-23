@@ -148,6 +148,17 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 		}
 	}
 	taskCreated = true
+	mixedReq.async = &mixedModeAsyncState{
+		RequestID:     rec.RequestID,
+		UserID:        ak.UserID,
+		KeyID:         ak.ID,
+		ClientIP:      c.ClientIP(),
+		EstimatedCost: estimatedCost,
+		StartedAt:     time.Now(),
+		ComputeCost: func(imageCount int) int64 {
+			return billing.ComputeImageCost(imageModel, imageCount, ratio)
+		},
+	}
 
 	runCtx, cancel := context.WithTimeout(c.Request.Context(), h.mixedModeRunTimeout(chatModel))
 	defer cancel()
@@ -178,13 +189,31 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 		refund(apiErr.Code, "chat image mixed refund")
 		return nil, apiErr
 	}
+	if res != nil && res.Status == mixedModeExecStatusInProgress {
+		rec.Status = usage.StatusPending
+		rec.AccountID = res.AccountID
+		rec.ImageCount = len(res.Images)
+		if res.ImageTask == nil {
+			res.ImageTask = buildMixedModeImageTask(taskID, res.ConversationID, mixedReq.RequestedN, len(res.Images), image.StatusRunning)
+		}
+		logger.L().Info("chat mixed image accepted async",
+			zap.String("request_id", rec.RequestID),
+			zap.String("task_id", taskID),
+			zap.Uint64("account_id", res.AccountID),
+			zap.String("conversation_id", res.ConversationID),
+			zap.Int("requested_n", mixedReq.RequestedN),
+			zap.Int("ready_n", len(res.Images)),
+			zap.String("thinking_effort", mixedReq.ThinkingEffort),
+			zap.String("strategy", strategy))
+		return res, nil
+	}
 	actualCost := billing.ComputeImageCost(imageModel, len(res.Images), ratio)
 	if err := h.Billing.Settle(context.Background(), ak.UserID, ak.ID, estimatedCost, actualCost, refID, "chat image mixed settle"); err != nil {
 		logger.L().Error("billing settle chat mixed image", zap.Error(err), zap.String("ref", refID))
 	}
 	h.touchKeyUsage(context.Background(), ak.ID, c.ClientIP(), actualCost)
 
-	if err := h.Images.DAO.MarkSuccess(c.Request.Context(), taskID, res.ConversationID, res.FileRefs, res.SignedURLs, actualCost); err != nil {
+	if err := h.Images.DAO.MarkSuccess(c.Request.Context(), taskID, res.ConversationID, res.FileRefs, res.taskResultURLs(), actualCost); err != nil {
 		logger.L().Warn("chat mixed image mark success failed",
 			zap.String("task_id", taskID), zap.Error(err))
 	}
@@ -278,10 +307,16 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 			Message: "上游客户端初始化失败:" + err.Error(),
 		}
 	}
-	defer func() { _ = lease.Release(context.Background()) }()
+	releaseLease := true
+	defer func() {
+		if releaseLease {
+			_ = lease.Release(context.Background())
+		}
+	}()
 
 	if h.Images != nil && h.Images.DAO != nil {
 		_ = h.Images.DAO.SetAccount(ctx, taskID, lease.Account.ID)
+		_ = h.Images.DAO.MarkRunning(ctx, taskID, lease.Account.ID, "")
 	}
 
 	proofToken, apiErr := h.solveMixedModeProof(ctx, cr, lease)
@@ -359,13 +394,19 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 
 	finalState := collector.Result()
 	res := &mixedModeExecResult{
+		Status:         mixedModeExecStatusCompleted,
 		TaskID:         taskID,
 		AccountID:      lease.Account.ID,
 		ConversationID: finalState.ConversationID,
 		AssistantText:  finalState.AssistantText,
 		ReasoningText:  finalState.ReasoningText,
 	}
+	if h.Images != nil && h.Images.DAO != nil && res.ConversationID != "" {
+		_ = h.Images.DAO.MarkRunning(ctx, taskID, lease.Account.ID, res.ConversationID)
+	}
 	reasoningText := strings.TrimSpace(finalState.ReasoningText)
+	initialRefs := collectMixedModeRefs(finalState.FileIDs, finalState.SedimentIDs)
+	asyncAccepted := finalState.AsyncAccepted || len(initialRefs) > 0
 
 	logger.L().Info("chat mixed image SSE parsed",
 		zap.String("task_id", taskID),
@@ -377,65 +418,52 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 		zap.Int("requested_n", req.RequestedN),
 		zap.Int("sse_files", len(finalState.FileIDs)),
 		zap.Int("sse_sediments", len(finalState.SedimentIDs)),
+		zap.Bool("async_accepted", asyncAccepted),
 		zap.Bool("thinking_model", isThinkingModel(chatModel)),
 		zap.Bool("thinking_triggered", reasoningText != ""),
 		zap.Int("reasoning_len", len(reasoningText)),
 		zap.Int("excluded_account_ids_count", len(excluded)),
 		zap.String("persona", cr.Persona),
 	)
-	fileRefs, isPreview, apiErr := resolveMixedModeFileRefs(
+	fileRefs, accepted, recoverErr := h.recoverMixedModeImageRefs(
 		ctx,
 		cli,
 		res.ConversationID,
-		finalState.FileIDs,
-		finalState.SedimentIDs,
+		initialRefs,
+		asyncAccepted,
 		req.RequestedN,
-		h.mixedModePollMaxWait(chatModel),
+		h.mixedModeBlockingWait(chatModel),
+		nil,
 	)
-	if apiErr != nil {
-		return nil, apiErr
+	if recoverErr != nil && !errors.Is(recoverErr, context.Canceled) {
+		return nil, &mixedModeAPIError{
+			Status:  http.StatusBadGateway,
+			Code:    "upstream_error",
+			Message: "上游图片结果轮询失败,请稍后重试",
+		}
 	}
-	res.IsPreview = isPreview
+	res.IsPreview = mixedModeIsPreview(fileRefs)
+	res.FileRefs = append([]string(nil), fileRefs...)
+	res.Images, res.SignedURLs, res.ContentTypes = buildMixedModeImages(taskID, fileRefs, res.IsPreview)
+	if h.Images != nil && h.Images.DAO != nil && (res.ConversationID != "" || len(res.FileRefs) > 0) {
+		_ = h.Images.DAO.UpdateProgress(ctx, taskID, res.ConversationID, res.FileRefs, res.taskResultURLs())
+	}
 
+	if len(fileRefs) >= req.RequestedN {
+		return res, nil
+	}
+	if accepted {
+		res.Status = mixedModeExecStatusInProgress
+		res.ImageTask = buildMixedModeImageTask(taskID, res.ConversationID, req.RequestedN, len(res.Images), image.StatusRunning)
+		releaseLease = false
+		h.startMixedModeAsyncRecovery(req.async, lease, cli, chatModel, req, res)
+		return res, nil
+	}
 	if len(fileRefs) == 0 {
 		return nil, &mixedModeAPIError{
 			Status:  http.StatusBadGateway,
 			Code:    "upstream_image_not_returned",
 			Message: "上游本轮对话未返回图片结果,没有自动降级到旧图片接口",
-		}
-	}
-	res.FileRefs = make([]string, 0, len(fileRefs))
-	res.SignedURLs = make([]string, 0, len(fileRefs))
-	res.ContentTypes = make([]string, 0, len(fileRefs))
-	res.Images = make([]MixedModeImage, 0, len(fileRefs))
-	for _, ref := range fileRefs {
-		url, err := cli.ImageDownloadURL(ctx, res.ConversationID, ref)
-		if err != nil {
-			logger.L().Warn("chat mixed image download url failed",
-				zap.String("task_id", taskID),
-				zap.String("ref", ref),
-				zap.Error(err))
-			continue
-		}
-		idx := len(res.Images)
-		contentType := "image/png"
-		res.FileRefs = append(res.FileRefs, ref)
-		res.SignedURLs = append(res.SignedURLs, url)
-		res.ContentTypes = append(res.ContentTypes, contentType)
-		res.Images = append(res.Images, MixedModeImage{
-			URL:         BuildImageProxyURL(taskID, idx, ImageProxyTTL),
-			FileID:      strings.TrimPrefix(ref, "sed:"),
-			ContentType: contentType,
-			TaskID:      taskID,
-			IsPreview:   res.IsPreview,
-		})
-	}
-
-	if len(res.Images) == 0 {
-		return nil, &mixedModeAPIError{
-			Status:  http.StatusBadGateway,
-			Code:    "upstream_image_download_failed",
-			Message: "上游已返回图片引用,但签名下载链接获取失败",
 		}
 	}
 	return res, nil

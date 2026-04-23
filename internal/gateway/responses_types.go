@@ -28,6 +28,7 @@ type ResponseObject struct {
 	Status    string               `json:"status"`
 	Output    []ResponseOutputItem `json:"output"`
 	Images    []MixedModeImage     `json:"images,omitempty"`
+	ImageTask *MixedModeImageTask  `json:"image_task,omitempty"`
 }
 
 type ResponseOutputItem struct {

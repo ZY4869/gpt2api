@@ -10,6 +10,7 @@ import (
 
 	"github.com/432539/gpt2api/internal/apikey"
 	"github.com/432539/gpt2api/internal/billing"
+	"github.com/432539/gpt2api/internal/image"
 	modelpkg "github.com/432539/gpt2api/internal/model"
 	"github.com/432539/gpt2api/internal/upstream/chatgpt"
 	"github.com/432539/gpt2api/internal/usage"
@@ -162,6 +163,64 @@ func TestExecuteMixedModeChatImageSuccessN3SettlesRequestedCount(t *testing.T) {
 	}
 	if rec.ImageCount != 3 || rec.CreditCost != 900 {
 		t.Fatalf("rec = %+v", *rec)
+	}
+}
+
+func TestExecuteMixedModeChatImageInProgressLeavesUsagePending(t *testing.T) {
+	chatModel := &modelpkg.Model{ID: 11, Slug: "gpt-5-thinking", Type: modelpkg.TypeChat, Enabled: true}
+	imageModel := &modelpkg.Model{ID: 22, Slug: "gpt-image-2", Type: modelpkg.TypeImage, Enabled: true, ImagePricePerCall: 300}
+	taskStore := &fakeImageTaskStore{}
+	bill := &fakeBillingStore{}
+	h := &Handler{
+		Models: &fakeModelStore{
+			bySlug:  map[string]*modelpkg.Model{"gpt-5-thinking": chatModel, "gpt-image-2": imageModel},
+			enabled: []*modelpkg.Model{chatModel, imageModel},
+		},
+		Billing:  bill,
+		Settings: fakeSettings{mixedEnabled: true},
+	}
+	h.mixedModeConversationRunner = func(_ context.Context, taskID string, _ *modelpkg.Model, req *mixedModePreparedRequest) (*mixedModeExecResult, *mixedModeAPIError) {
+		return &mixedModeExecResult{
+			Status:         mixedModeExecStatusInProgress,
+			TaskID:         taskID,
+			AccountID:      77,
+			ConversationID: "conv_pending",
+			FileRefs:       []string{"file_partial_1"},
+			Images: []MixedModeImage{
+				{URL: "/p/img/task_pending/0?exp=1&sig=a", FileID: "file_partial_1", ContentType: "image/png", TaskID: taskID},
+			},
+			ImageTask: buildMixedModeImageTask(taskID, "conv_pending", req.RequestedN, 1, image.StatusRunning),
+		}, nil
+	}
+	h.Images = &ImagesHandler{
+		Handler:          h,
+		DAO:              taskStore,
+		ImageAccResolver: stubImageAccountResolver{},
+	}
+
+	rec := &usage.Log{RequestID: "req_mixed_pending"}
+	ak := &apikey.APIKey{ID: 2, UserID: 3, Enabled: true}
+	c, _ := newJSONContext(t, "/v1/chat/completions", `{}`, ak)
+	n := 2
+	res, apiErr := h.executeMixedModeChatImage(c, rec, ak, "gpt-5-thinking", mixedModeRequestInput{
+		Messages:       []chatgpt.ChatMessage{{Role: "user", Content: "生成2张连续故事图"}},
+		RequestedN:     &n,
+		ThinkingEffort: "standard",
+	})
+	if apiErr != nil {
+		t.Fatalf("apiErr = %+v", apiErr)
+	}
+	if res == nil || res.Status != mixedModeExecStatusInProgress {
+		t.Fatalf("res = %+v, want in_progress", res)
+	}
+	if rec.Status != usage.StatusPending {
+		t.Fatalf("rec.Status = %q, want pending", rec.Status)
+	}
+	if len(bill.settles) != 0 || len(bill.refunds) != 0 {
+		t.Fatalf("billing should not finalize early, settles=%#v refunds=%#v", bill.settles, bill.refunds)
+	}
+	if taskStore.success.TaskID != "" {
+		t.Fatalf("task should not be marked success early: %#v", taskStore.success)
 	}
 }
 

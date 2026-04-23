@@ -10,8 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/432539/gpt2api/internal/apikey"
-	"github.com/432539/gpt2api/internal/usage"
 	"github.com/432539/gpt2api/internal/upstream/chatgpt"
+	"github.com/432539/gpt2api/internal/usage"
 )
 
 type mixedModeChatChunkSink struct {
@@ -22,11 +22,11 @@ type mixedModeChatChunkSink struct {
 }
 
 func (s *mixedModeChatChunkSink) OnReasoningDelta(text string) {
-	writeChunkWithImages(s.w, s.f, s.id, s.model, DeltaMsg{Reasoning: text}, nil, nil)
+	writeChunkWithImages(s.w, s.f, s.id, s.model, DeltaMsg{Reasoning: text}, nil, nil, nil)
 }
 
 func (s *mixedModeChatChunkSink) OnAssistantDelta(text string) {
-	writeChunkWithImages(s.w, s.f, s.id, s.model, DeltaMsg{Content: text}, nil, nil)
+	writeChunkWithImages(s.w, s.f, s.id, s.model, DeltaMsg{Content: text}, nil, nil, nil)
 }
 
 type mixedModeResponsesSink struct {
@@ -63,7 +63,7 @@ func (h *Handler) streamMixedModeChatCompletions(
 	flusher, _ := w.(http.Flusher)
 
 	id := "chatcmpl-" + newUUIDFunc()
-	writeChunkWithImages(w, flusher, id, req.Model, DeltaMsg{Role: "assistant"}, nil, nil)
+	writeChunkWithImages(w, flusher, id, req.Model, DeltaMsg{Role: "assistant"}, nil, nil, nil)
 
 	res, apiErr := h.executeMixedModeChatImageWithSink(c, rec, ak, req.Model, mixedModeRequestInput{
 		Messages:       req.Messages,
@@ -83,7 +83,7 @@ func (h *Handler) streamMixedModeChatCompletions(
 	}
 
 	stop := "stop"
-	writeChunkWithImages(w, flusher, id, req.Model, DeltaMsg{}, &stop, res.Images)
+	writeChunkWithImages(w, flusher, id, req.Model, DeltaMsg{}, &stop, res.Images, res.ImageTask)
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	if flusher != nil {
 		flusher.Flush()
@@ -134,11 +134,28 @@ func (h *Handler) streamMixedModeResponses(
 	}
 
 	outputImages := buildResponseOutputImages(res.Images)
-	writeSSEJSONEvent(w, flusher, "response.image_generation_call.completed", gin.H{
+	if res.Status == mixedModeExecStatusInProgress {
+		payload := gin.H{
+			"type":   "response.image_generation_call.in_progress",
+			"status": "in_progress",
+			"result": outputImages,
+		}
+		if res.ImageTask != nil {
+			payload["image_task"] = res.ImageTask
+		}
+		writeSSEJSONEvent(w, flusher, "response.image_generation_call.in_progress", payload)
+		writeSSEJSONEvent(w, flusher, "response.in_progress", buildMixedModeResponseObject(responseID, req.Model, res))
+		return
+	}
+	payload := gin.H{
 		"type":   "response.image_generation_call.completed",
 		"status": "completed",
 		"result": outputImages,
-	})
+	}
+	if res.ImageTask != nil {
+		payload["image_task"] = res.ImageTask
+	}
+	writeSSEJSONEvent(w, flusher, "response.image_generation_call.completed", payload)
 	writeSSEJSONEvent(w, flusher, "response.completed", buildMixedModeResponseObject(responseID, req.Model, res))
 }
 
@@ -159,6 +176,12 @@ func buildResponseOutputImages(images []MixedModeImage) []ResponseOutputImage {
 
 func buildMixedModeResponseObject(responseID, model string, res *mixedModeExecResult) ResponseObject {
 	outputItems := make([]ResponseOutputItem, 0, 2)
+	status := "completed"
+	imageStatus := "completed"
+	if res != nil && res.Status == mixedModeExecStatusInProgress {
+		status = "in_progress"
+		imageStatus = "in_progress"
+	}
 	if text := res.responseText(); text != "" {
 		outputItems = append(outputItems, ResponseOutputItem{
 			ID:     "msg_" + newUUIDFunc(),
@@ -174,7 +197,7 @@ func buildMixedModeResponseObject(responseID, model string, res *mixedModeExecRe
 	outputItems = append(outputItems, ResponseOutputItem{
 		ID:     "igc_" + newUUIDFunc(),
 		Type:   "image_generation_call",
-		Status: "completed",
+		Status: imageStatus,
 		Result: buildResponseOutputImages(res.Images),
 	})
 	return ResponseObject{
@@ -182,9 +205,10 @@ func buildMixedModeResponseObject(responseID, model string, res *mixedModeExecRe
 		Object:    "response",
 		CreatedAt: nowFunc().Unix(),
 		Model:     model,
-		Status:    "completed",
+		Status:    status,
 		Output:    outputItems,
 		Images:    res.Images,
+		ImageTask: res.ImageTask,
 	}
 }
 
@@ -195,14 +219,16 @@ func writeChunkWithImages(
 	delta DeltaMsg,
 	finish *string,
 	images []MixedModeImage,
+	imageTask *MixedModeImageTask,
 ) {
 	chunk := ChatCompletionChunk{
-		ID:      id,
-		Object:  "chat.completion.chunk",
-		Created: nowFunc().Unix(),
-		Model:   model,
-		Choices: []ChatCompletionChunkChoice{{Index: 0, Delta: delta, FinishReason: finish}},
-		Images:  images,
+		ID:        id,
+		Object:    "chat.completion.chunk",
+		Created:   nowFunc().Unix(),
+		Model:     model,
+		Choices:   []ChatCompletionChunkChoice{{Index: 0, Delta: delta, FinishReason: finish}},
+		Images:    images,
+		ImageTask: imageTask,
 	}
 	b, _ := json.Marshal(chunk)
 	fmt.Fprintf(w, "data: %s\n\n", b)

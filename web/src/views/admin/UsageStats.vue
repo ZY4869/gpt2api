@@ -64,6 +64,7 @@ onMounted(load)
           <el-select v-model="filter.status" style="width:130px" clearable placeholder="状态" @change="load">
             <el-option label="全部" value="" />
             <el-option label="成功" value="success" />
+            <el-option label="处理中" value="pending" />
             <el-option label="失败" value="failed" />
           </el-select>
           <el-button @click="load" type="primary" :loading="loading">

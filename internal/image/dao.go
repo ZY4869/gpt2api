@@ -41,12 +41,15 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, NOW())`,
 	return nil
 }
 
-// MarkRunning 标记为运行中(记录起始时间 + account_id)。
-func (d *DAO) MarkRunning(ctx context.Context, taskID string, accountID uint64) error {
+// MarkRunning 标记为运行中(记录起始时间 + account_id / conversation_id)。
+func (d *DAO) MarkRunning(ctx context.Context, taskID string, accountID uint64, convID string) error {
 	_, err := d.db.ExecContext(ctx, `
 UPDATE image_tasks
-   SET status='running', account_id=?, started_at=NOW()
- WHERE task_id=? AND status IN ('queued','dispatched')`, accountID, taskID)
+   SET status='running',
+       account_id=CASE WHEN ? > 0 THEN ? ELSE account_id END,
+       conversation_id=CASE WHEN ? <> '' THEN ? ELSE conversation_id END,
+       started_at=COALESCE(started_at, NOW())
+ WHERE task_id=? AND status IN ('queued','dispatched','running')`, accountID, accountID, convID, convID, taskID)
 	return err
 }
 
@@ -57,6 +60,34 @@ UPDATE image_tasks
 func (d *DAO) SetAccount(ctx context.Context, taskID string, accountID uint64) error {
 	_, err := d.db.ExecContext(ctx,
 		`UPDATE image_tasks SET account_id = ? WHERE task_id = ?`, accountID, taskID)
+	return err
+}
+
+// UpdateProgress 在任务仍运行时回写已知 conversation / file_ids / result_urls。
+func (d *DAO) UpdateProgress(ctx context.Context, taskID, convID string, fileIDs, resultURLs []string) error {
+	var fidArg interface{}
+	var urlArg interface{}
+	if fileIDs != nil {
+		fidB, _ := json.Marshal(fileIDs)
+		fidArg = fidB
+	}
+	if resultURLs != nil {
+		urlB, _ := json.Marshal(resultURLs)
+		urlArg = urlB
+	}
+	_, err := d.db.ExecContext(ctx, `
+UPDATE image_tasks
+   SET status='running',
+       conversation_id=CASE WHEN ? <> '' THEN ? ELSE conversation_id END,
+       file_ids=CASE WHEN ? IS NULL THEN file_ids ELSE ? END,
+       result_urls=CASE WHEN ? IS NULL THEN result_urls ELSE ? END,
+       started_at=COALESCE(started_at, NOW())
+ WHERE task_id=? AND status IN ('queued','dispatched','running')`,
+		convID, convID,
+		fidArg, fidArg,
+		urlArg, urlArg,
+		taskID,
+	)
 	return err
 }
 

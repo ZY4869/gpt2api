@@ -23,6 +23,7 @@ type mixedModePreparedRequest struct {
 	Prompt         string
 	RequestedN     int
 	ThinkingEffort string
+	async          *mixedModeAsyncState
 }
 
 var (

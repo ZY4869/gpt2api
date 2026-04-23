@@ -51,3 +51,25 @@ func TestParseImageSSEUsesFullMessageFallback(t *testing.T) {
 		t.Fatalf("reasoning_text = %q, want %q", got.ReasoningText, wantReasoning)
 	}
 }
+
+func TestParseImageSSEMarksAsyncAccepted(t *testing.T) {
+	stream := make(chan SSEEvent, 2)
+	stream <- SSEEvent{Data: []byte(`{"message":{"author":{"role":"tool"},"metadata":{"chatgpt_sdk":{"tool_response_metadata":{"conversation_async_status":5}}}}}`)}
+	close(stream)
+
+	got := ParseImageSSE(stream)
+	if !got.AsyncAccepted {
+		t.Fatalf("async_accepted = false, want true")
+	}
+}
+
+func TestParseImageSSEMarksAsyncAcceptedFromPlaceholderTool(t *testing.T) {
+	stream := make(chan SSEEvent, 2)
+	stream <- SSEEvent{Data: []byte(`{"message":{"author":{"role":"tool","name":"image_generation"},"content":{"content_type":"multimodal_text","parts":[]},"status":"finished_successfully"}}`)}
+	close(stream)
+
+	got := ParseImageSSE(stream)
+	if !got.AsyncAccepted {
+		t.Fatalf("async_accepted = false, want true for placeholder tool message")
+	}
+}

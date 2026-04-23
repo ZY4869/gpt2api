@@ -1,0 +1,11 @@
+event: response.created
+data: {"created_at":1710806400,"id":"resp_resp_stream_pending","model":"gpt-5-thinking","object":"response","status":"in_progress"}
+
+event: response.reasoning.delta
+data: {"delta":"先把首张图稳定下来。","type":"response.reasoning.delta"}
+
+event: response.image_generation_call.in_progress
+data: {"image_task":{"task_id":"task_stream_pending","status":"running","requested_n":2,"ready_n":1,"conversation_id":"conv_stream_pending"},"result":[{"type":"output_image","url":"/p/img/task_stream_pending/0?exp=1710892800000\u0026sig=respstreaminprogress","file_id":"file_stream_pending_1","content_type":"image/png","task_id":"task_stream_pending"}],"status":"in_progress","type":"response.image_generation_call.in_progress"}
+
+event: response.in_progress
+data: {"id":"resp_resp_stream_pending","object":"response","created_at":1710806400,"model":"gpt-5-thinking","status":"in_progress","output":[{"id":"msg_resp_stream_pending_message","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"先把首张图稳定下来。"}]},{"id":"igc_resp_stream_pending_image","type":"image_generation_call","status":"in_progress","result":[{"type":"output_image","url":"/p/img/task_stream_pending/0?exp=1710892800000\u0026sig=respstreaminprogress","file_id":"file_stream_pending_1","content_type":"image/png","task_id":"task_stream_pending"}]}],"images":[{"url":"/p/img/task_stream_pending/0?exp=1710892800000\u0026sig=respstreaminprogress","file_id":"file_stream_pending_1","content_type":"image/png","task_id":"task_stream_pending"}],"image_task":{"task_id":"task_stream_pending","status":"running","requested_n":2,"ready_n":1,"conversation_id":"conv_stream_pending"}}

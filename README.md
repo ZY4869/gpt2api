@@ -446,19 +446,19 @@ data: [DONE]
 event: response.created
 event: response.reasoning.delta
 event: response.output_text.delta
-event: response.image_generation_call.completed
-event: response.completed
+event: response.image_generation_call.completed | response.image_generation_call.in_progress
+event: response.completed | response.in_progress
 ```
 
 协议与约束:
 
 - mixed-mode 只在 `image_generation=true` 或 `tools:[{type:"image_generation"}]` 时触发
 - 如需稳定触发思考,请显式使用 thinking 模型名;推荐 `gpt-5-thinking` 这个稳定别名(当前映射到 `gpt-5-4-thinking`)
-- `chat/completions stream=true` 已支持实时 `delta.reasoning` 与 `delta.content`; mixed-mode 结束 chunk 会在顶层附带 `images`,晚到失败会发送 `event: error`
-- `/v1/responses stream=true` 会发送 `response.created`、`response.reasoning.delta`、`response.output_text.delta`、`response.image_generation_call.completed`、`response.completed`、`response.failed`
+- `chat/completions stream=true` 已支持实时 `delta.reasoning` 与 `delta.content`; mixed-mode 结束 chunk 会在顶层附带 `images`,若上游已受理但图片仍在补齐,会改为返回 `image_task`
+- `/v1/responses stream=true` 会发送 `response.created`、`response.reasoning.delta`、`response.output_text.delta`、`response.image_generation_call.completed/in_progress`、`response.completed/in_progress`、`response.failed`
 - thinking 普通对话非流式会返回 `choices[0].reasoning`; mixed-mode 成功时也会把 reasoning 聚合到文本返回里,便于前端展示
-- thinking mixed-mode 继续走显式 thinking 模型 + `thinking_effort` 路径;若首响未拿满套图,服务端会继续补齐并可通过任务接口刷新结果
-- 如果上游同轮对话没有真的产图,服务端会严格返回 `upstream_image_not_returned`,不会自动降级到旧 `/v1/images/generations`
+- thinking mixed-mode 继续走显式 thinking 模型 + `thinking_effort` 路径;若首响未拿满套图,服务端会返回 HTTP 200 + `image_task` 并在后台继续补齐,调用方可通过任务接口刷新结果
+- 只有在短阻塞补拉和后台补拉都失败后,才会最终落成 `upstream_image_not_returned`;不会自动降级到旧 `/v1/images/generations`
 - mixed-mode 仍保留对话模型语义,对外 `model` 不变,内部只用默认图片模型配置做计费和 `image_tasks` 落库映射
 - thinking mixed-mode 默认使用更长的执行/轮询超时,并可通过 `gateway.chat_image_run_timeout_sec`、`gateway.chat_image_poll_max_wait_sec`、`gateway.chat_image_thinking_run_timeout_sec`、`gateway.chat_image_thinking_poll_max_wait_sec` 单独调优
 

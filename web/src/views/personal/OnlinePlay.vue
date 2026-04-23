@@ -14,6 +14,7 @@ import {
   type PlayChatMessage,
   type PlayImageData,
   type PlayMixedImage,
+  type PlayMixedImageTask,
 } from '@/api/me'
 import { ENABLE_CHAT_IMAGE_MIXED, ENABLE_CHAT_MODEL } from '@/config/feature'
 
@@ -81,6 +82,7 @@ interface UIMessage {
   reasoning?: string
   content: string
   images?: PlayMixedImage[]
+  imageTask?: PlayMixedImageTask
   pending?: boolean
   error?: boolean
   at: number
@@ -183,8 +185,18 @@ async function sendChat() {
         },
         onImages: (images) => {
           assistant.images = images
-          assistant.pending = false
-          void startMixedModeTaskPolling(assistant, images)
+          if (!assistant.imageTask || assistant.imageTask.status !== 'running') {
+            assistant.pending = false
+          }
+          void startMixedModeTaskPolling(assistant, images, assistant.imageTask)
+          scrollChat()
+        },
+        onImageTask: (task) => {
+          assistant.imageTask = task
+          assistant.pending = task.status === 'running'
+          if (task.status === 'running') {
+            void startMixedModeTaskPolling(assistant, assistant.images || [], task)
+          }
           scrollChat()
         },
       },
@@ -192,10 +204,17 @@ async function sendChat() {
     )
     if (!assistant.reasoning && result.reasoning) assistant.reasoning = result.reasoning
     if (!assistant.content && result.content) assistant.content = result.content
+    if (result.imageTask) assistant.imageTask = result.imageTask
     if ((!assistant.images || assistant.images.length === 0) && result.images.length) assistant.images = result.images
-    if (result.images.length) void startMixedModeTaskPolling(assistant, result.images)
-    assistant.pending = false
-    if (!assistant.reasoning && !assistant.content && !assistant.images?.length) assistant.content = '(无输出)'
+    if (result.imageTask?.status === 'running' || result.images.length) {
+      void startMixedModeTaskPolling(assistant, result.images, result.imageTask)
+    }
+    if (result.imageTask?.status !== 'running') {
+      assistant.pending = false
+    }
+    if (!assistant.reasoning && !assistant.content && !assistant.images?.length && result.imageTask?.status !== 'running') {
+      assistant.content = '(无输出)'
+    }
   } catch (err: unknown) {
     assistant.pending = false
     assistant.error = true
@@ -253,21 +272,33 @@ function stopMixedModeTaskPolling() {
   chatTaskPollAbort = null
 }
 
-async function startMixedModeTaskPolling(assistant: UIMessage, images: PlayMixedImage[]) {
-  const taskID = images[0]?.task_id
+async function startMixedModeTaskPolling(
+  assistant: UIMessage,
+  images: PlayMixedImage[],
+  imageTask?: PlayMixedImageTask,
+) {
+  const taskID = imageTask?.task_id || images[0]?.task_id
   if (!chatImageMode.value || !taskID) return
 
   stopMixedModeTaskPolling()
   const controller = new AbortController()
   chatTaskPollAbort = controller
+  assistant.pending = true
 
   try {
     await pollMixedImageTask(taskID, {
       signal: controller.signal,
       onUpdate: (taskImages, task) => {
+        assistant.imageTask = {
+          task_id: task.task_id,
+          status: task.status,
+          requested_n: task.n,
+          ready_n: taskImages.length,
+          conversation_id: task.conversation_id,
+        }
         if (taskImages.length >= (assistant.images?.length || 0)) {
           assistant.images = taskImages.length ? taskImages : taskToMixedImages(task)
-          assistant.pending = false
+          assistant.pending = task.status === 'running' && taskImages.length < Math.max(task.n || 1, 1)
           scrollChat()
         }
       },
@@ -277,6 +308,9 @@ async function startMixedModeTaskPolling(assistant: UIMessage, images: PlayMixed
       /* ignore */
     }
   } finally {
+    if (assistant.imageTask?.status !== 'running') {
+      assistant.pending = false
+    }
     if (chatTaskPollAbort === controller) chatTaskPollAbort = null
   }
 }

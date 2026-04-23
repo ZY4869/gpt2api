@@ -15,6 +15,7 @@ type StreamMessageUpdate struct {
 	SedimentIDs    []string
 	FinishType     string
 	ImageGenTaskID string
+	AsyncAccepted  bool
 	Final          bool
 }
 
@@ -27,6 +28,7 @@ type StreamMessageCollector struct {
 	sedimentIDs    []string
 	seenFileIDs    map[string]struct{}
 	seenSediment   map[string]struct{}
+	asyncAccepted  bool
 }
 
 func NewStreamMessageCollector() *StreamMessageCollector {
@@ -63,6 +65,7 @@ func (c *StreamMessageCollector) Consume(data []byte) StreamMessageUpdate {
 		SedimentIDs:    append([]string(nil), cur.SedimentIDs...),
 		FinishType:     cur.FinishType,
 		ImageGenTaskID: cur.ImageGenTaskID,
+		AsyncAccepted:  cur.AsyncAccepted,
 		Final:          final,
 	}
 }
@@ -77,6 +80,7 @@ func (c *StreamMessageCollector) Result() StreamMessageUpdate {
 		SedimentIDs:    append([]string(nil), c.sedimentIDs...),
 		FinishType:     c.finishType,
 		ImageGenTaskID: c.imageGenTaskID,
+		AsyncAccepted:  c.asyncAccepted,
 	}
 }
 
@@ -118,6 +122,7 @@ func (c *StreamMessageCollector) consumeValueMetadata(v map[string]interface{}) 
 }
 
 func (c *StreamMessageCollector) consumeMessageMetadata(msg map[string]interface{}) {
+	c.consumeAsyncSignals(msg)
 	meta, _ := msg["metadata"].(map[string]interface{})
 	if meta == nil {
 		return
@@ -129,6 +134,68 @@ func (c *StreamMessageCollector) consumeMessageMetadata(msg map[string]interface
 		if ft, ok := fd["type"].(string); ok && ft != "" {
 			c.finishType = ft
 		}
+	}
+}
+
+func (c *StreamMessageCollector) consumeAsyncSignals(msg map[string]interface{}) {
+	if c.asyncAccepted {
+		return
+	}
+	if isAsyncPlaceholderToolMessage(msg) {
+		c.asyncAccepted = true
+		return
+	}
+	meta, _ := msg["metadata"].(map[string]interface{})
+	if meta == nil {
+		return
+	}
+	if _, ok := meta["conversation_async_status"]; ok {
+		c.asyncAccepted = true
+		return
+	}
+	sdk, _ := meta["chatgpt_sdk"].(map[string]interface{})
+	if sdk == nil {
+		return
+	}
+	toolMeta, _ := sdk["tool_response_metadata"].(map[string]interface{})
+	if toolMeta == nil {
+		return
+	}
+	if _, ok := toolMeta["conversation_async_status"]; ok {
+		c.asyncAccepted = true
+	}
+}
+
+func isAsyncPlaceholderToolMessage(msg map[string]interface{}) bool {
+	author, _ := msg["author"].(map[string]interface{})
+	if author == nil {
+		return false
+	}
+	if role, _ := author["role"].(string); role != "tool" {
+		return false
+	}
+	content, _ := msg["content"].(map[string]interface{})
+	if content == nil {
+		return false
+	}
+	if contentType, _ := content["content_type"].(string); contentType != "multimodal_text" {
+		return false
+	}
+	if !isEmptyMessageParts(content["parts"]) {
+		return false
+	}
+	status, _ := msg["status"].(string)
+	return strings.TrimSpace(status) == "finished_successfully"
+}
+
+func isEmptyMessageParts(v interface{}) bool {
+	switch parts := v.(type) {
+	case []interface{}:
+		return len(parts) == 0
+	case []string:
+		return len(parts) == 0
+	default:
+		return false
 	}
 }
 

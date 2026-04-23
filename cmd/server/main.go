@@ -45,7 +45,7 @@ var (
 )
 
 var (
-	version   = "0.5.1"
+	version   = "0.5.2"
 	buildTime = "unknown"
 )
 

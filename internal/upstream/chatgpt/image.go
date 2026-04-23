@@ -308,11 +308,13 @@ type ImageSSEResult struct {
 	ImageGenTaskID string
 	AssistantText  string
 	ReasoningText  string
+	AsyncAccepted  bool
 }
 
 var (
-	reFileRef = regexp.MustCompile(`file-service://([A-Za-z0-9_-]+)`)
-	reSedRef  = regexp.MustCompile(`sediment://([A-Za-z0-9_-]+)`)
+	reFileRef        = regexp.MustCompile(`file-service://([A-Za-z0-9_-]+)`)
+	reSedRef         = regexp.MustCompile(`sediment://([A-Za-z0-9_-]+)`)
+	reEstuaryFileRef = regexp.MustCompile(`(?:^|[?&])id=(file_[A-Za-z0-9_-]+)`)
 )
 
 // ParseImageSSE 消费 SSE 事件流,把图像相关的字段提取出来。
@@ -342,6 +344,7 @@ func ParseImageSSE(stream <-chan SSEEvent) ImageSSEResult {
 		ImageGenTaskID: final.ImageGenTaskID,
 		AssistantText:  final.AssistantText,
 		ReasoningText:  final.ReasoningText,
+		AsyncAccepted:  final.AsyncAccepted,
 	}
 }
 
@@ -424,12 +427,6 @@ func ExtractImageToolMsgs(mapping map[string]interface{}) []ImageToolMsg {
 		if s, _ := author["role"].(string); s != "tool" {
 			continue
 		}
-		if s, _ := meta["async_task_type"].(string); s != "image_gen" {
-			continue
-		}
-		if s, _ := content["content_type"].(string); s != "multimodal_text" {
-			continue
-		}
 
 		tm := ImageToolMsg{MessageID: mid}
 		if v, ok := msg["create_time"].(float64); ok {
@@ -448,37 +445,75 @@ func ExtractImageToolMsgs(mapping map[string]interface{}) []ImageToolMsg {
 			tm.ImageGenTitle = v
 		}
 
-		parts, _ := content["parts"].([]interface{})
 		seenF := map[string]struct{}{}
 		seenS := map[string]struct{}{}
-		extractAsset := func(text string) {
-			for _, m := range reFileRef.FindAllStringSubmatch(text, -1) {
-				if _, ok := seenF[m[1]]; !ok {
-					seenF[m[1]] = struct{}{}
-					tm.FileIDs = append(tm.FileIDs, m[1])
-				}
-			}
-			for _, m := range reSedRef.FindAllStringSubmatch(text, -1) {
-				if _, ok := seenS[m[1]]; !ok {
-					seenS[m[1]] = struct{}{}
-					tm.SedimentIDs = append(tm.SedimentIDs, m[1])
-				}
-			}
-		}
-		for _, p := range parts {
-			switch v := p.(type) {
-			case map[string]interface{}:
-				if aid, _ := v["asset_pointer"].(string); aid != "" {
-					extractAsset(aid)
-				}
-			case string:
-				extractAsset(v)
-			}
+		collectImageRefs(content, &tm, seenF, seenS)
+		collectImageRefs(meta, &tm, seenF, seenS)
+		if len(tm.FileIDs) == 0 && len(tm.SedimentIDs) == 0 {
+			continue
 		}
 		out = append(out, tm)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreateTime < out[j].CreateTime })
 	return out
+}
+
+func collectImageRefs(v interface{}, tm *ImageToolMsg, seenF, seenS map[string]struct{}) {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		for key, item := range x {
+			if key == "asset_pointer" {
+				if text, ok := item.(string); ok {
+					collectImageTextRefs(text, tm, seenF, seenS)
+					continue
+				}
+			}
+			collectImageRefs(item, tm, seenF, seenS)
+		}
+	case []interface{}:
+		for _, item := range x {
+			collectImageRefs(item, tm, seenF, seenS)
+		}
+	case string:
+		collectImageTextRefs(x, tm, seenF, seenS)
+	}
+}
+
+func collectImageTextRefs(text string, tm *ImageToolMsg, seenF, seenS map[string]struct{}) {
+	for _, m := range reFileRef.FindAllStringSubmatch(text, -1) {
+		if _, ok := seenF[m[1]]; ok {
+			continue
+		}
+		seenF[m[1]] = struct{}{}
+		tm.FileIDs = append(tm.FileIDs, m[1])
+	}
+	for _, m := range reSedRef.FindAllStringSubmatch(text, -1) {
+		if _, ok := seenS[m[1]]; ok {
+			continue
+		}
+		seenS[m[1]] = struct{}{}
+		tm.SedimentIDs = append(tm.SedimentIDs, m[1])
+	}
+	if fid := estuaryFileIDFromText(text); fid != "" {
+		if _, ok := seenF[fid]; !ok {
+			seenF[fid] = struct{}{}
+			tm.FileIDs = append(tm.FileIDs, fid)
+		}
+	}
+}
+
+func estuaryFileIDFromText(text string) string {
+	if strings.Contains(text, "/backend-api/estuary/content") {
+		if u, err := url.Parse(text); err == nil {
+			if fid := strings.TrimSpace(u.Query().Get("id")); strings.HasPrefix(fid, "file_") {
+				return fid
+			}
+		}
+	}
+	if m := reEstuaryFileRef.FindStringSubmatch(text); len(m) == 2 {
+		return m[1]
+	}
+	return ""
 }
 
 // PollOpts 控制 PollConversationForImages 的等待策略。

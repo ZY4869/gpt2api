@@ -19,6 +19,7 @@ import (
 )
 
 type mixedModeExecResult struct {
+	Status         string
 	TaskID         string
 	AccountID      uint64
 	ConversationID string
@@ -29,6 +30,7 @@ type mixedModeExecResult struct {
 	IsPreview      bool
 	AssistantText  string
 	ReasoningText  string
+	ImageTask      *MixedModeImageTask
 }
 
 type mixedModeAPIError struct {
@@ -99,8 +101,9 @@ func (h *Handler) handleChatImageGeneration(c *gin.Context, rec *usage.Log, ak *
 			Reasoning:    strings.TrimSpace(res.ReasoningText),
 			FinishReason: "stop",
 		}},
-		Usage:  ChatCompletionUsage{},
-		Images: res.Images,
+		Usage:     ChatCompletionUsage{},
+		Images:    res.Images,
+		ImageTask: res.ImageTask,
 	})
 }
 

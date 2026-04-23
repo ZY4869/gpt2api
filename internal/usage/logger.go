@@ -13,6 +13,8 @@ package usage
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -25,8 +27,8 @@ import (
 
 // Options 可选参数。
 type Options struct {
-	Buffer       int
-	Batch        int
+	Buffer        int
+	Batch         int
 	FlushInterval time.Duration
 }
 
@@ -74,6 +76,57 @@ func (l *Logger) Write(row *Log) {
 	default:
 		logger.L().Warn("usage_logs channel full, dropping entry",
 			zap.String("request_id", row.RequestID))
+	}
+}
+
+// Finalize 按 request_id 回写最终状态,用于 pending -> success/failed 收口。
+func (l *Logger) Finalize(ctx context.Context, requestID string, patch FinalizePatch) error {
+	if l == nil || l.db == nil || strings.TrimSpace(requestID) == "" {
+		return nil
+	}
+	if strings.TrimSpace(patch.Status) == "" {
+		return fmt.Errorf("usage finalize: empty status")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		res, err := l.db.ExecContext(ctx, `
+UPDATE usage_logs
+   SET account_id=CASE WHEN ? > 0 THEN ? ELSE account_id END,
+       image_count=?,
+       credit_cost=?,
+       duration_ms=?,
+       status=?,
+       error_code=?
+ WHERE request_id=?
+ ORDER BY id DESC
+ LIMIT 1`,
+			patch.AccountID, patch.AccountID,
+			patch.ImageCount,
+			patch.CreditCost,
+			patch.DurationMs,
+			patch.Status,
+			patch.ErrorCode,
+			requestID,
+		)
+		if err != nil {
+			return err
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows > 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return sql.ErrNoRows
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
 

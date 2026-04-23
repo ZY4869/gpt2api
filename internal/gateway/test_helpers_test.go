@@ -156,7 +156,13 @@ func (s fakeKeyStore) TouchUsage(ctx context.Context, id uint64, lastIP string, 
 	return s.dao.TouchUsage(ctx, id, lastIP, deltaQuota)
 }
 
-type fakeUsageStore struct{ rows []usage.Log }
+type fakeUsageStore struct {
+	rows      []usage.Log
+	finalized []struct {
+		RequestID string
+		Patch     usage.FinalizePatch
+	}
+}
 
 func (s *fakeUsageStore) Write(row *usage.Log) {
 	if row == nil {
@@ -166,8 +172,39 @@ func (s *fakeUsageStore) Write(row *usage.Log) {
 	s.rows = append(s.rows, cp)
 }
 
+func (s *fakeUsageStore) Finalize(_ context.Context, requestID string, patch usage.FinalizePatch) error {
+	s.finalized = append(s.finalized, struct {
+		RequestID string
+		Patch     usage.FinalizePatch
+	}{RequestID: requestID, Patch: patch})
+	for i := range s.rows {
+		if s.rows[i].RequestID != requestID {
+			continue
+		}
+		s.rows[i].AccountID = patch.AccountID
+		s.rows[i].ImageCount = patch.ImageCount
+		s.rows[i].CreditCost = patch.CreditCost
+		s.rows[i].DurationMs = patch.DurationMs
+		s.rows[i].Status = patch.Status
+		s.rows[i].ErrorCode = patch.ErrorCode
+		return nil
+	}
+	return nil
+}
+
 type fakeImageTaskStore struct {
-	created    []*image.Task
+	created []*image.Task
+	running []struct {
+		TaskID    string
+		AccountID uint64
+		ConvID    string
+	}
+	progress []struct {
+		TaskID     string
+		ConvID     string
+		FileIDs    []string
+		ResultURLs []string
+	}
 	failed     []struct{ TaskID, Code string }
 	setAccount []struct {
 		TaskID    string
@@ -197,11 +234,59 @@ func (s *fakeImageTaskStore) Create(_ context.Context, t *image.Task) error {
 	return nil
 }
 
+func (s *fakeImageTaskStore) MarkRunning(_ context.Context, taskID string, accountID uint64, convID string) error {
+	s.running = append(s.running, struct {
+		TaskID    string
+		AccountID uint64
+		ConvID    string
+	}{TaskID: taskID, AccountID: accountID, ConvID: convID})
+	if s.tasks != nil && s.tasks[taskID] != nil {
+		s.tasks[taskID].Status = image.StatusRunning
+		s.tasks[taskID].AccountID = accountID
+		if convID != "" {
+			s.tasks[taskID].ConversationID = convID
+		}
+	}
+	return nil
+}
+
 func (s *fakeImageTaskStore) SetAccount(_ context.Context, taskID string, accountID uint64) error {
 	s.setAccount = append(s.setAccount, struct {
 		TaskID    string
 		AccountID uint64
 	}{TaskID: taskID, AccountID: accountID})
+	if s.tasks != nil && s.tasks[taskID] != nil {
+		s.tasks[taskID].AccountID = accountID
+	}
+	return nil
+}
+
+func (s *fakeImageTaskStore) UpdateProgress(_ context.Context, taskID, convID string, fileIDs, resultURLs []string) error {
+	s.progress = append(s.progress, struct {
+		TaskID     string
+		ConvID     string
+		FileIDs    []string
+		ResultURLs []string
+	}{
+		TaskID:     taskID,
+		ConvID:     convID,
+		FileIDs:    append([]string(nil), fileIDs...),
+		ResultURLs: append([]string(nil), resultURLs...),
+	})
+	if s.tasks != nil && s.tasks[taskID] != nil {
+		s.tasks[taskID].Status = image.StatusRunning
+		if convID != "" {
+			s.tasks[taskID].ConversationID = convID
+		}
+		if fileIDs != nil {
+			b, _ := json.Marshal(fileIDs)
+			s.tasks[taskID].FileIDs = b
+		}
+		if resultURLs != nil {
+			b, _ := json.Marshal(resultURLs)
+			s.tasks[taskID].ResultURLs = b
+		}
+	}
 	return nil
 }
 
@@ -216,6 +301,15 @@ func (s *fakeImageTaskStore) MarkSuccess(_ context.Context, taskID, convID strin
 		TaskID: taskID, ConvID: convID, FileIDs: append([]string(nil), fileIDs...),
 		ResultURLs: append([]string(nil), resultURLs...), CreditCost: creditCost,
 	}
+	if s.tasks != nil && s.tasks[taskID] != nil {
+		s.tasks[taskID].Status = image.StatusSuccess
+		s.tasks[taskID].ConversationID = convID
+		s.tasks[taskID].CreditCost = creditCost
+		fidB, _ := json.Marshal(fileIDs)
+		urlB, _ := json.Marshal(resultURLs)
+		s.tasks[taskID].FileIDs = fidB
+		s.tasks[taskID].ResultURLs = urlB
+	}
 	return nil
 }
 
@@ -229,6 +323,10 @@ func (s *fakeImageTaskStore) UpdateCost(_ context.Context, taskID string, cost i
 
 func (s *fakeImageTaskStore) MarkFailed(_ context.Context, taskID, errorCode string) error {
 	s.failed = append(s.failed, struct{ TaskID, Code string }{TaskID: taskID, Code: errorCode})
+	if s.tasks != nil && s.tasks[taskID] != nil {
+		s.tasks[taskID].Status = image.StatusFailed
+		s.tasks[taskID].Error = errorCode
+	}
 	return nil
 }
 

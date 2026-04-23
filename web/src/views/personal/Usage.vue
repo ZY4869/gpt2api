@@ -161,6 +161,7 @@ function refreshLogs() {
 const statusMap: Record<string, { tag: 'success' | 'danger' | 'warning' | 'info'; label: string }> = {
   success: { tag: 'success', label: '成功' },
   failed: { tag: 'danger', label: '失败' },
+  pending: { tag: 'warning', label: '处理中' },
   partial: { tag: 'warning', label: '部分' },
 }
 function statusTag(s: string) {
@@ -474,6 +475,7 @@ onMounted(() => {
                          @change="refreshLogs">
                 <el-option label="全部" value="" />
                 <el-option label="成功" value="success" />
+                <el-option label="处理中" value="pending" />
                 <el-option label="失败" value="failed" />
               </el-select>
             </div>

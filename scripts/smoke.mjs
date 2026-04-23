@@ -143,6 +143,16 @@ function hasOrderedResponsesStreamEvents(body) {
   return createdIdx >= 0 && deltaIdx > createdIdx && imageIdx > deltaIdx && completedIdx > imageIdx
 }
 
+function hasOrderedResponsesInProgressEvents(body) {
+  const events = listSSEEventNames(body)
+  const createdIdx = events.indexOf('response.created')
+  const deltaIdx = events.findIndex((event, idx) =>
+    idx > createdIdx && (event === 'response.reasoning.delta' || event === 'response.output_text.delta'))
+  const imageIdx = events.indexOf('response.image_generation_call.in_progress')
+  const pendingIdx = events.indexOf('response.in_progress')
+  return createdIdx >= 0 && deltaIdx > createdIdx && imageIdx > deltaIdx && pendingIdx > imageIdx
+}
+
 function shouldSkipMixedModeCode(code) {
   return [
     'model_not_found',
@@ -480,6 +490,8 @@ async function checkMixedMode() {
     } else if (body.includes('data: [DONE]') && body.includes('"images"')) {
       if (body.includes('"reasoning"')) ok('chat mixed-mode stream=true 返回 SSE reasoning,并在最终 chunk 附带 images')
       else ok('chat mixed-mode stream=true 已完成并返回最终 images(本轮可能没有可见 reasoning 文本)')
+    } else if (body.includes('data: [DONE]') && body.includes('"image_task"') && body.includes('"status":"running"')) {
+      ok('chat mixed-mode stream=true 已返回 in_progress image_task,后续可继续拉取任务结果')
     } else {
       bad('chat mixed-mode stream=true 校验失败', `body=${body.slice(0, 500)}`)
     }
@@ -504,8 +516,11 @@ async function checkMixedMode() {
     return
   }
   const chatImages = chatResp.body?.images
+  const chatTask = chatResp.body?.image_task
   if (chatResp.status === 200 && Array.isArray(chatImages) && chatImages.length > 0) {
     ok(`chat mixed-mode 返回 ${chatImages.length} 张图片,并携带顶层 images 字段`)
+  } else if (chatResp.status === 200 && chatTask?.status === 'running') {
+    ok(`chat mixed-mode 已返回 image_task 继续补图(task=${chatTask.task_id}, ready=${chatTask.ready_n ?? 0}/${chatTask.requested_n ?? '?'})`)
   } else {
     bad('chat mixed-mode 成功响应结构异常', `status=${chatResp.status} code=${openaiCode(chatResp)} body=${JSON.stringify(chatResp.body)}`)
   }
@@ -533,6 +548,8 @@ async function checkMixedMode() {
     } else if (hasOrderedResponsesStreamEvents(body) && body.includes('"type":"output_image"') && body.includes('event: response.completed')) {
       if (body.includes('event: response.reasoning.delta')) ok('responses mixed-mode stream=true 返回 reasoning 事件,并按 created -> delta -> image_generation_call.completed -> completed 顺序结束')
       else ok('responses mixed-mode stream=true 未返回可见 reasoning 事件,但已按 created -> delta -> image_generation_call.completed -> completed 顺序结束')
+    } else if (hasOrderedResponsesInProgressEvents(body) && body.includes('"image_task"')) {
+      ok('responses mixed-mode stream=true 已返回 in_progress 事件和 image_task,后续可继续拉取任务结果')
     } else {
       bad('responses mixed-mode stream=true 校验失败', `events=${listSSEEventNames(body).join(' > ')} body=${body.slice(0, 600)}`)
     }
@@ -552,9 +569,12 @@ async function checkMixedMode() {
     return
   }
   const responseImages = responsesResp.body?.images
+  const responseTask = responsesResp.body?.image_task
   const hasImageCall = Array.isArray(responsesResp.body?.output) && responsesResp.body.output.some((x) => x?.type === 'image_generation_call')
   if (responsesResp.status === 200 && Array.isArray(responseImages) && responseImages.length > 0 && hasImageCall) {
     ok(`responses mixed-mode 返回 ${responseImages.length} 张图片,output 中包含 image_generation_call`)
+  } else if (responsesResp.status === 200 && responsesResp.body?.status === 'in_progress' && responseTask?.status === 'running' && hasImageCall) {
+    ok(`responses mixed-mode 已返回 in_progress image_task(task=${responseTask.task_id}, ready=${responseTask.ready_n ?? 0}/${responseTask.requested_n ?? '?'})`)
   } else {
     bad('responses mixed-mode 成功响应结构异常', `status=${responsesResp.status} code=${openaiCode(responsesResp)} body=${JSON.stringify(responsesResp.body)}`)
   }

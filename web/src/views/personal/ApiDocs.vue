@@ -254,11 +254,11 @@ data: {"type":"response.reasoning.delta","delta":"先拆分镜头与角色动作
 event: response.output_text.delta
 data: {"type":"response.output_text.delta","delta":"我会保持透明背景与统一画风。"}
 
-event: response.image_generation_call.completed
-data: {"type":"response.image_generation_call.completed","status":"completed","result":[{"type":"output_image","url":"${origin.value}/p/img/img_xxx/0?exp=...&sig=...","file_id":"file-xxx","content_type":"image/png","task_id":"img_xxx"}]}
+event: response.image_generation_call.in_progress
+data: {"type":"response.image_generation_call.in_progress","status":"in_progress","image_task":{"task_id":"img_xxx","status":"running","requested_n":2,"ready_n":1,"conversation_id":"conv_xxx"},"result":[{"type":"output_image","url":"${origin.value}/p/img/img_xxx/0?exp=...&sig=...","file_id":"file-xxx","content_type":"image/png","task_id":"img_xxx"}]}
 
-event: response.completed
-data: {"id":"resp_xxx","object":"response","status":"completed","images":[{"url":"${origin.value}/p/img/img_xxx/0?exp=...&sig=...","file_id":"file-xxx","content_type":"image/png","task_id":"img_xxx"}]}`
+event: response.in_progress
+data: {"id":"resp_xxx","object":"response","status":"in_progress","image_task":{"task_id":"img_xxx","status":"running","requested_n":2,"ready_n":1,"conversation_id":"conv_xxx"},"images":[{"url":"${origin.value}/p/img/img_xxx/0?exp=...&sig=...","file_id":"file-xxx","content_type":"image/png","task_id":"img_xxx"}]}`
 })
 
 const imageCurl = computed(() => {
@@ -404,7 +404,7 @@ onMounted(async () => {
               :closable="false"
               show-icon
               title="对话框生图首版说明"
-              description="chat/responses mixed-mode 仅在 image_generation=true 或 tools:[{type:'image_generation'}] 时触发,现已支持 stream=true。thinking chat chunk 会额外返回 delta.reasoning;/v1/responses 会发出 response.reasoning.delta、response.output_text.delta、response.image_generation_call.completed、response.completed/response.failed。mixed-mode 会继续透传 thinking_effort,若首响未拿满套图,可继续通过任务接口刷新补齐。"
+              description="chat/responses mixed-mode 仅在 image_generation=true 或 tools:[{type:'image_generation'}] 时触发,现已支持 stream=true。thinking chat chunk 会额外返回 delta.reasoning;/v1/responses 会发出 response.reasoning.delta、response.output_text.delta、response.image_generation_call.completed/in_progress、response.completed/in_progress、response.failed。若首响未拿满套图,响应会带 image_task,前端会继续通过任务接口补拉整套图。"
               style="margin-top: 12px"
             />
 

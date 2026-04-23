@@ -12,6 +12,7 @@ const (
 const (
 	StatusSuccess = "success"
 	StatusFailed  = "failed"
+	StatusPending = "pending"
 )
 
 // Log 对应 usage_logs 表一行。
@@ -34,4 +35,14 @@ type Log struct {
 	IP               string    `db:"ip"`
 	UA               string    `db:"ua"`
 	CreatedAt        time.Time `db:"created_at"`
+}
+
+// FinalizePatch 描述一次按 request_id 收口 usage 的最终更新。
+type FinalizePatch struct {
+	AccountID  uint64
+	ImageCount int
+	CreditCost int64
+	DurationMs int
+	Status     string
+	ErrorCode  string
 }

@@ -171,6 +171,7 @@ export interface ChatStreamChunk {
   id?: string
   model?: string
   images?: PlayMixedImage[]
+  image_task?: PlayMixedImageTask
   choices?: Array<{
     index?: number
     delta?: ChatStreamDelta
@@ -191,9 +192,18 @@ export interface PlayMixedImage {
   is_preview?: boolean
 }
 
+export interface PlayMixedImageTask {
+  task_id: string
+  status: 'running' | 'success' | 'failed' | string
+  requested_n: number
+  ready_n: number
+  conversation_id?: string
+}
+
 export interface PlayChatResponse {
   id?: string
   model?: string
+  image_task?: PlayMixedImageTask
   choices?: Array<{
     index?: number
     reasoning?: string
@@ -210,12 +220,14 @@ export interface PlayChatStreamHandlers {
   onContentDelta?: (text: string) => void
   onReasoningDelta?: (text: string) => void
   onImages?: (images: PlayMixedImage[]) => void
+  onImageTask?: (task: PlayMixedImageTask) => void
 }
 
 export interface PlayChatStreamResult {
   content: string
   reasoning: string
   images: PlayMixedImage[]
+  imageTask?: PlayMixedImageTask
 }
 
 function parseSSEBlock(block: string): { event: string; data: string } {
@@ -240,6 +252,11 @@ function parseSSEBlock(block: string): { event: string; data: string } {
 
 function normalizeMixedImages(value: unknown): PlayMixedImage[] {
   return Array.isArray(value) ? (value as PlayMixedImage[]) : []
+}
+
+function normalizeMixedImageTask(value: unknown): PlayMixedImageTask | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  return value as PlayMixedImageTask
 }
 
 function extractStreamError(payload: any, fallback: string): Error {
@@ -308,6 +325,11 @@ export async function streamPlayChat(
     result.images = images
     handlers.onImages?.(images)
   }
+  const setImageTask = (task?: PlayMixedImageTask) => {
+    if (!task) return
+    result.imageTask = task
+    handlers.onImageTask?.(task)
+  }
 
   while (true) {
     const { done, value } = await reader.read()
@@ -340,10 +362,22 @@ export async function streamPlayChat(
       }
       if (event === 'response.image_generation_call.completed') {
         setImages(normalizeMixedImages(payload?.result))
+        setImageTask(normalizeMixedImageTask(payload?.image_task))
+        continue
+      }
+      if (event === 'response.image_generation_call.in_progress') {
+        setImages(normalizeMixedImages(payload?.result))
+        setImageTask(normalizeMixedImageTask(payload?.image_task))
         continue
       }
       if (event === 'response.completed') {
         setImages(normalizeMixedImages(payload?.images))
+        setImageTask(normalizeMixedImageTask(payload?.image_task))
+        continue
+      }
+      if (event === 'response.in_progress') {
+        setImages(normalizeMixedImages(payload?.images))
+        setImageTask(normalizeMixedImageTask(payload?.image_task))
         continue
       }
 
@@ -351,6 +385,7 @@ export async function streamPlayChat(
       pushReasoning(chunk.choices?.[0]?.delta?.reasoning || '')
       pushContent(chunk.choices?.[0]?.delta?.content || '')
       setImages(normalizeMixedImages(chunk.images))
+      setImageTask(normalizeMixedImageTask(chunk.image_task))
       if (payload?.error) {
         throw extractStreamError(payload, '流式请求失败')
       }
