@@ -3,7 +3,7 @@
 > 本文是项目的顶层架构与开发约定,所有开发者在动工前必须通读。
 > 姊妹文档:`[API_NOTES.md](../API_NOTES.md)`(上游接口细节)、`[RISK_AND_SAAS.md](../RISK_AND_SAAS.md)`(风控与调度原则)。
 >
-> 最后更新:2026-04-17
+> 最后更新:2026-04-23
 
 ---
 
@@ -240,8 +240,10 @@ DispatchAccount(modelType) -> (Account, Unlock, err)
 - mixed-mode 生图首版额外支持:
   - `POST /v1/chat/completions` + `image_generation=true`
   - `POST /v1/responses` + `image_generation=true` 或 `tools:[{type:"image_generation"}]`
-- mixed-mode 成功时保留标准响应外壳,但在顶层追加 `images` 扩展数组;`/v1/responses` 的 `output[0].type` 固定为 `image_generation_call`
-- mixed-mode 暂不支持 `stream=true`;命中后固定返回 `400 image_generation_stream_unsupported`
+- thinking 普通对话在 `chat.completions` 流式 chunk 中额外透出 `delta.reasoning`,非流式则透出 `choices[0].reasoning`
+- mixed-mode 成功时保留标准响应外壳,并在顶层追加 `images` 扩展数组;`/v1/responses` 的 `output` 会带 `message` + `image_generation_call`
+- mixed-mode 已支持 `stream=true`;`chat/completions` 末尾 chunk 可带顶层 `images`,`/v1/responses` 会发送 `response.created` / `response.reasoning.delta` / `response.output_text.delta` / `response.image_generation_call.completed` / `response.completed` / `response.failed`
+- thinking mixed-mode 若整轮未触发任何非空 reasoning,固定返回 `502 thinking_not_triggered`,不会把任务误记为 success
 - mixed-mode 若同轮对话未产图,固定返回 `upstream_image_not_returned`,不会自动降级到旧 `/v1/images/generations`
 
 ### 6.3 积分预扣与结算
@@ -420,7 +422,7 @@ sequenceDiagram
 ### 7.6 接口约定
 
 - 所有业务接口走 `/api/*`,返回 `{code, message, data, trace_id}`,HTTP 状态仅用于 401/403/404/429/5xx 等框架级错误
-- OpenAI 兼容接口走 `/v1/*`;其中 mixed-mode 首版在 `chat/responses` 顶层增加 `images` 扩展字段,用于统一消费图片代理 URL
+- OpenAI 兼容接口走 `/v1/*`;其中 mixed-mode 在 `chat/responses` 顶层增加 `images` 扩展字段,流式时还会携带 reasoning 增量,用于统一消费图片代理 URL 与实时思考文本
 - 鉴权两套:
   - `/api/`* 用 JWT(`Authorization: Bearer <jwt>`)
   - `/v1/`* 用 API KEY(`Authorization: Bearer sk-xxxxxxxx`)
@@ -575,7 +577,7 @@ html.dark {
 | 方法   | 路径                            | 说明                                     |
 | ---- | ----------------------------- | -------------------------------------- |
 | POST | `/v1/chat/completions`        | 文字对话,支持 stream                         |
-| POST | `/v1/responses`              | mixed-mode 生图首版(仅 `image_generation` 子集,默认需开 flag) |
+| POST | `/v1/responses`              | mixed-mode 生图(仅 `image_generation` 子集,支持命名 SSE 事件流) |
 | POST | `/v1/images/generations`      | 生图(异步,返回 task_id;支持 `sync=true` 退化为同步) |
 | GET  | `/v1/images/tasks/{id}`       | 查生图结果(扩展接口)                            |
 | GET  | `/v1/models`                  | 可用模型列表(按 KEY 白名单过滤)                    |

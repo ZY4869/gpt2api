@@ -50,7 +50,7 @@
 - 想给公司 / 团队内部开通 OpenAI 风格的代理网关,把所有调用统计、计费、审计集中管理;
 - 想低成本搭一个带积分 / 套餐 / 易支付的 AI API 中台,面向 C 端或 B 端开发者售卖。
 
-> 本项目当前版本**聚焦图片模型**(详见 [8.1 IMG2 灰度命中测试](#81-img2-灰度命中测试) 与 [8.2 批量出图](#82-批量出图--多张聚合))。文字通路(`/v1/chat/completions`)代码层完整保留,但因 `chatgpt.com` 新 sentinel 协议存在短期不稳定因素,UI 入口已在当前版本关闭,恢复只需改一行 feature flag,详见 [十一、二次开发](#十一二次开发--定制)。
+> 本项目当前版本依然**优先优化图片链路**(详见 [8.1 IMG2 灰度命中测试](#81-img2-灰度命中测试) 与 [8.2 批量出图](#82-批量出图--多张聚合)),同时已经重新开放文字通路与 mixed-mode Playground 入口。thinking 请求会在调度阶段严格排除 free 账号,并在运行期遇到 `chatgpt-freeaccount` 时立即切号重试;`/v1/images/generations` 与 `/v1/images/edits` 仍保持独立图片协议,不受本轮 thinking 规则影响。
 
 ---
 
@@ -88,7 +88,7 @@
 | **账号池** | JSON / AT / RT / ST 四种方式批量导入,**自动刷新**、**额度探测**、**风控熔断**、按账号稳定绑定 `oai-device-id` / `oai-session-id` |
 | **代理池** | 支持 HTTP / SOCKS5,健康分自动探测,按账号强绑定代理,避免 IP 指纹混用 |
 | **调度器** | 串行 lease + Redis 分布式锁,`min_interval_sec` 单号最小间隔、`daily_usage_ratio` 日熔断、`cooldown_429_sec` 限速退避 |
-| **OpenAI 兼容** | `/v1/chat/completions`、`/v1/responses`(mixed-mode 首版,默认需开 feature flag)、`/v1/images/generations`、`/v1/images/edits`、`/v1/images/tasks/:id`、`/v1/models` |
+| **OpenAI 兼容** | `/v1/chat/completions`、`/v1/responses`(mixed-mode 已支持 `stream=true` + 实时 reasoning)、`/v1/images/generations`、`/v1/images/edits`、`/v1/images/tasks/:id`、`/v1/models` |
 | **下游 Key** | 独立于用户账号的 `sk-` Key,支持 **RPM / TPM / 日配额 / IP 白名单 / 模型白名单** |
 | **计费** | 积分钱包 + 预扣结算、分组倍率(VIP / 内部 / 渠道)、充值套餐、**易支付(EPay)**接入 |
 | **安全** | AES-256-GCM 加密 AT / cookies、JWT 登录、RBAC 权限、**管理员写操作全链路审计**、高危操作 `X-Admin-Confirm` 二次确认 |
@@ -360,7 +360,7 @@ curl https://your-domain.com/v1/images/tasks/img_xxx \
 启用条件:
 
 - 后端系统设置打开 `gateway.chat_image_mixed_enabled=true`
-- 前端若要在 Playground / 接口文档暴露入口,再把 `web/src/config/feature.ts` 里的 `ENABLE_CHAT_IMAGE_MIXED` 打开
+- 前端默认已开放 Playground / 接口文档入口;若需要临时隐藏,可把 `web/src/config/feature.ts` 里的 `ENABLE_CHAT_IMAGE_MIXED` 改回 `false`
 
 `/v1/chat/completions` 触发方式:
 
@@ -428,11 +428,35 @@ curl https://your-domain.com/v1/responses \
 }
 ```
 
-首版约束:
+**流式返回要点**:
+
+`/v1/chat/completions stream=true`:
+
+```text
+data: {"choices":[{"delta":{"role":"assistant"}}]}
+data: {"choices":[{"delta":{"reasoning":"先拆分镜头与角色动作。"}}]}
+data: {"choices":[{"delta":{"content":"我会生成一张透明背景故事图。"}}]}
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"images":[{"url":"https://your-domain.com/p/img/img_xxx/0?exp=...&sig=..."}]}
+data: [DONE]
+```
+
+`/v1/responses stream=true`:
+
+```text
+event: response.created
+event: response.reasoning.delta
+event: response.output_text.delta
+event: response.image_generation_call.completed
+event: response.completed
+```
+
+协议与约束:
 
 - mixed-mode 只在 `image_generation=true` 或 `tools:[{type:"image_generation"}]` 时触发
-- mixed-mode 暂不支持 `stream=true`,命中后固定返回 `400 image_generation_stream_unsupported`
-- 成功时请从顶层 `images` 字段读取图片代理链接;thinking 生图若上游返回了思考摘要,会同步带回到 `chat.completion.choices[0].message.content` / `choices[0].reasoning`,`/v1/responses` 则会在 `output` 里额外补一条 `type:"message"` 的文本项
+- `chat/completions stream=true` 已支持实时 `delta.reasoning` 与 `delta.content`; mixed-mode 结束 chunk 会在顶层附带 `images`,晚到失败会发送 `event: error`
+- `/v1/responses stream=true` 会发送 `response.created`、`response.reasoning.delta`、`response.output_text.delta`、`response.image_generation_call.completed`、`response.completed`、`response.failed`
+- thinking 普通对话非流式会返回 `choices[0].reasoning`; mixed-mode 成功时也会把 reasoning 聚合到文本返回里,便于前端展示
+- thinking mixed-mode 若整轮没有收到任何非空 reasoning,即使拿到图片引用也会严格失败为 `502 thinking_not_triggered`,并退款 / 标记任务失败
 - 如果上游同轮对话没有真的产图,服务端会严格返回 `upstream_image_not_returned`,不会自动降级到旧 `/v1/images/generations`
 - mixed-mode 仍保留对话模型语义,对外 `model` 不变,内部只用默认图片模型配置做计费和 `image_tasks` 落库映射
 - thinking mixed-mode 默认使用更长的执行/轮询超时,并可通过 `gateway.chat_image_run_timeout_sec`、`gateway.chat_image_poll_max_wait_sec`、`gateway.chat_image_thinking_run_timeout_sec`、`gateway.chat_image_thinking_poll_max_wait_sec` 单独调优
@@ -440,7 +464,7 @@ curl https://your-domain.com/v1/responses \
 发布与观测建议:
 
 - 先只打开后端 `gateway.chat_image_mixed_enabled`,用 API Key 直接验证 `/v1/chat/completions` 与 `/v1/responses`
-- API 成功后再打开前端 `ENABLE_CHAT_IMAGE_MIXED`,放出 Playground「生图模式」与文档示例
+- 前端入口默认已开放;如果你只想灰度给 API 用户,可临时关闭 `ENABLE_CHAT_IMAGE_MIXED`
 - 发布后至少同时检查三处:`usage_logs.type=image`、`image_tasks.conversation_id/file_ids/result_urls`、`/p/img/...` 代理下载是否正常
 
 ---
@@ -665,14 +689,14 @@ npm run dev          # http://localhost:5173,自动代理到 :8080
 npm run build        # 构建到 web/dist/,供后端 SPA 路由挂载
 ```
 
-**恢复文字模型 UI**(当前版本默认关闭):
+**临时隐藏文字模型 UI**(默认已开启):
 
 ```ts
 // web/src/config/feature.ts
-export const ENABLE_CHAT_MODEL = true    // ← 改这里,重新 build
+export const ENABLE_CHAT_MODEL = false   // ← 改这里,重新 build
 ```
 
-所有涉及文字入口的页面(在线体验 / 接口文档 / 用量统计 / 模型配置 …)会自动重新出现。
+所有涉及文字入口的页面(在线体验 / 接口文档 / 用量统计 / 模型配置 …)会自动一起隐藏。
 
 ### 自定义模型 slug 映射
 
@@ -697,9 +721,14 @@ chatgpt.com 的实际上游 slug 会随账号等级微调(例如 Plus 用 `gpt-5
 </details>
 
 <details>
-<summary><b>Q3. 文字模型为什么默认关闭?</b></summary>
+<summary><b>Q3. 为什么 thinking 请求会严格排除 free 账号?</b></summary>
 
-`chatgpt.com` 新 sentinel(`/prepare` + `/finalize`)对文字通路引入了 Turnstile 挑战,项目已实现完整的两步 sentinel + conduit token + 全套 header 指纹,但 Turnstile 本身需要外部 solver 才能稳定返回 `turnstile` 字段。当前版本默认走**单步回退**,适合图片(图片通路容忍度高),对文字则存在静默拒绝。接入 Turnstile solver 后把 `ENABLE_CHAT_MODEL` 改回 `true` 即可恢复。
+因为 `chatgpt-freeaccount` 对 thinking / premium 通路经常表现为"静默拒绝"或拿到 persona 后空转等待。当前版本对 thinking 模型做了两层硬门槛:
+
+1. 调度阶段直接跳过已知 `plan_type=free` / `account_type=free` 的账号;
+2. 运行期一旦 `chat-requirements` 返回 `chatgpt-freeaccount`,立刻回写 `plan_type=free`、释放租约、切下一个账号重试,不再走 5 分钟 429 冷却。
+
+这样能显著减少 thinking 请求白等超时,也让 Playground 里的实时思考展示更稳定。
 </details>
 
 <details>

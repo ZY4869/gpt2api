@@ -318,71 +318,31 @@ var (
 // ParseImageSSE 消费 SSE 事件流,把图像相关的字段提取出来。
 // 调用方可以根据返回的 FileIDs 判断是否已灰度直出。
 func ParseImageSSE(stream <-chan SSEEvent) ImageSSEResult {
-	var r ImageSSEResult
-	seenFile := map[string]struct{}{}
-	seenSed := map[string]struct{}{}
-	textCollector := newSSETextCollector()
+	collector := NewStreamMessageCollector()
 
 	for ev := range stream {
 		if ev.Err != nil {
-			text := textCollector.Result()
-			r.AssistantText = sanitizeImageSSEText(text.AssistantText)
-			r.ReasoningText = sanitizeImageSSEText(text.ReasoningText)
-			return r
+			break
 		}
 		data := ev.Data
 		if len(data) == 0 {
 			continue
 		}
-		textCollector.Consume(data)
-		if string(data) == "[DONE]" {
-			text := textCollector.Result()
-			r.AssistantText = sanitizeImageSSEText(text.AssistantText)
-			r.ReasoningText = sanitizeImageSSEText(text.ReasoningText)
-			return r
-		}
-		// 文本正则先扫一遍(比 JSON 解析更健壮)
-		for _, m := range reFileRef.FindAllSubmatch(data, -1) {
-			fid := string(m[1])
-			if _, ok := seenFile[fid]; !ok {
-				seenFile[fid] = struct{}{}
-				r.FileIDs = append(r.FileIDs, fid)
-			}
-		}
-		for _, m := range reSedRef.FindAllSubmatch(data, -1) {
-			sid := string(m[1])
-			if _, ok := seenSed[sid]; !ok {
-				seenSed[sid] = struct{}{}
-				r.SedimentIDs = append(r.SedimentIDs, sid)
-			}
-		}
-
-		var obj map[string]interface{}
-		if err := json.Unmarshal(data, &obj); err != nil {
-			continue
-		}
-		if v, ok := obj["v"].(map[string]interface{}); ok {
-			if cid, ok := v["conversation_id"].(string); ok && cid != "" && r.ConversationID == "" {
-				r.ConversationID = cid
-			}
-			if msg, ok := v["message"].(map[string]interface{}); ok {
-				if meta, ok := msg["metadata"].(map[string]interface{}); ok {
-					if tid, ok := meta["image_gen_task_id"].(string); ok {
-						r.ImageGenTaskID = tid
-					}
-					if fd, ok := meta["finish_details"].(map[string]interface{}); ok {
-						if ft, ok := fd["type"].(string); ok {
-							r.FinishType = ft
-						}
-					}
-				}
-			}
+		update := collector.Consume(data)
+		if update.Final {
+			break
 		}
 	}
-	text := textCollector.Result()
-	r.AssistantText = sanitizeImageSSEText(text.AssistantText)
-	r.ReasoningText = sanitizeImageSSEText(text.ReasoningText)
-	return r
+	final := collector.Result()
+	return ImageSSEResult{
+		ConversationID: final.ConversationID,
+		FileIDs:        final.FileIDs,
+		SedimentIDs:    final.SedimentIDs,
+		FinishType:     final.FinishType,
+		ImageGenTaskID: final.ImageGenTaskID,
+		AssistantText:  final.AssistantText,
+		ReasoningText:  final.ReasoningText,
+	}
 }
 
 func sanitizeImageSSEText(v string) string {

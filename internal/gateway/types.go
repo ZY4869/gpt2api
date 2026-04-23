@@ -57,6 +57,7 @@ type ChatCompletionChunk struct {
 	Created int64                       `json:"created"`
 	Model   string                      `json:"model"`
 	Choices []ChatCompletionChunkChoice `json:"choices"`
+	Images  []MixedModeImage            `json:"images,omitempty"`
 }
 
 type ChatCompletionChunkChoice struct {
@@ -66,6 +67,7 @@ type ChatCompletionChunkChoice struct {
 }
 
 type DeltaMsg struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Reasoning string `json:"reasoning,omitempty"`
 }

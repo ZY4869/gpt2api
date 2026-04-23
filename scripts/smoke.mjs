@@ -115,9 +115,35 @@ function unwrap(r)     { return isEnvelope(r.body) ? r.body.data : r.body }
 function err(r)        { return isEnvelope(r.body) ? r.body.message : typeof r.body === 'string' ? r.body : JSON.stringify(r.body) }
 function openaiCode(r) { return r?.body?.error?.code || '' }
 function openaiMsg(r)  { return r?.body?.error?.message || err(r) }
+function sseCode(body) { return String(body || '').match(/"code":"([^"]+)"/)?.[1] || '' }
+function sseMsg(body)  { return String(body || '').match(/"message":"([^"]+)"/)?.[1] || '' }
 
-function shouldSkipMixedMode(r) {
-  const code = openaiCode(r)
+function listSSEEventNames(body) {
+  const events = []
+  for (const block of String(body || '').split(/\r?\n\r?\n/)) {
+    if (!block.trim()) continue
+    let event = ''
+    let hasData = false
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('event:')) event = line.slice(6).trim()
+      if (line.startsWith('data:')) hasData = true
+    }
+    if (hasData) events.push(event)
+  }
+  return events
+}
+
+function hasOrderedResponsesStreamEvents(body) {
+  const events = listSSEEventNames(body)
+  const createdIdx = events.indexOf('response.created')
+  const deltaIdx = events.findIndex((event, idx) =>
+    idx > createdIdx && (event === 'response.reasoning.delta' || event === 'response.output_text.delta'))
+  const imageIdx = events.indexOf('response.image_generation_call.completed')
+  const completedIdx = events.indexOf('response.completed')
+  return createdIdx >= 0 && deltaIdx > createdIdx && imageIdx > deltaIdx && completedIdx > imageIdx
+}
+
+function shouldSkipMixedModeCode(code) {
   return [
     'model_not_found',
     'model_not_allowed',
@@ -129,6 +155,10 @@ function shouldSkipMixedMode(r) {
     'pow_failed',
     'image_not_wired',
   ].includes(code)
+}
+
+function shouldSkipMixedMode(r) {
+  return shouldSkipMixedModeCode(openaiCode(r))
 }
 
 // ========== 1. 健康 ==========
@@ -428,8 +458,30 @@ async function checkMixedMode() {
     stream: true,
     messages: [{ role: 'user', content: MIXED_PROMPT }],
   }})
-  if (chatStream.status === 400 && openaiCode(chatStream) === 'image_generation_stream_unsupported') {
-    ok('chat mixed-mode stream=true -> 400 image_generation_stream_unsupported')
+  if (chatStream.status === 403 && openaiCode(chatStream) === 'feature_disabled') {
+    ok('mixed-mode feature flag 关闭时, /v1/chat/completions 返回 403 feature_disabled')
+    await cleanup()
+    return
+  }
+  if (chatStream.status === 200 && typeof chatStream.body === 'string') {
+    const body = chatStream.body
+    if (body.includes('event: error')) {
+      const code = sseCode(body)
+      if (code === 'feature_disabled') {
+        ok('mixed-mode feature flag 关闭时, /v1/chat/completions stream=true 返回 event:error feature_disabled')
+        await cleanup()
+        return
+      }
+      if (shouldSkipMixedModeCode(code) || code === 'thinking_not_triggered') {
+        skip('chat mixed-mode stream=true 成功链路', `环境未满足:${code} ${sseMsg(body)}`)
+      } else {
+        bad('chat mixed-mode stream=true 校验失败', `late-error code=${code} msg=${sseMsg(body)}`)
+      }
+    } else if (body.includes('data: [DONE]') && body.includes('"images"')) {
+      ok('chat mixed-mode stream=true 返回 SSE,并在最终 chunk 附带 images')
+    } else {
+      bad('chat mixed-mode stream=true 校验失败', `body=${body.slice(0, 500)}`)
+    }
   } else {
     bad('chat mixed-mode stream=true 校验失败', `status=${chatStream.status} code=${openaiCode(chatStream)} msg=${openaiMsg(chatStream)}`)
   }
@@ -451,11 +503,39 @@ async function checkMixedMode() {
     return
   }
   const chatImages = chatResp.body?.images
-  const chatContent = chatResp.body?.choices?.[0]?.message?.content
-  if (chatResp.status === 200 && Array.isArray(chatImages) && chatImages.length > 0 && chatContent === '') {
+  if (chatResp.status === 200 && Array.isArray(chatImages) && chatImages.length > 0) {
     ok(`chat mixed-mode 返回 ${chatImages.length} 张图片,并携带顶层 images 字段`)
   } else {
     bad('chat mixed-mode 成功响应结构异常', `status=${chatResp.status} code=${openaiCode(chatResp)} body=${JSON.stringify(chatResp.body)}`)
+  }
+
+  const responsesStream = await call('POST', '/v1/responses', { token: apiKey, body: {
+    model: MIXED_MODEL,
+    input: MIXED_PROMPT,
+    tools: [{ type: 'image_generation' }],
+    stream: true,
+  }})
+  if (responsesStream.status === 200 && typeof responsesStream.body === 'string') {
+    const body = responsesStream.body
+    if (body.includes('event: response.failed')) {
+      const code = sseCode(body)
+      if (code === 'feature_disabled') {
+        ok('mixed-mode feature flag 关闭时, /v1/responses stream=true 返回 response.failed feature_disabled')
+        await cleanup()
+        return
+      }
+      if (shouldSkipMixedModeCode(code) || code === 'thinking_not_triggered') {
+        skip('responses mixed-mode stream=true 成功链路', `环境未满足:${code} ${sseMsg(body)}`)
+      } else {
+        bad('responses mixed-mode stream=true 校验失败', `late-error code=${code} msg=${sseMsg(body)}`)
+      }
+    } else if (hasOrderedResponsesStreamEvents(body) && body.includes('"type":"output_image"')) {
+      ok('responses mixed-mode stream=true 返回命名 SSE,并按 created -> delta -> image_generation_call.completed -> completed 顺序结束')
+    } else {
+      bad('responses mixed-mode stream=true 校验失败', `events=${listSSEEventNames(body).join(' > ')} body=${body.slice(0, 600)}`)
+    }
+  } else {
+    bad('responses mixed-mode stream=true 校验失败', `status=${responsesStream.status} code=${openaiCode(responsesStream)} msg=${openaiMsg(responsesStream)}`)
   }
 
   const responsesResp = await call('POST', '/v1/responses', { token: apiKey, body: {
@@ -470,9 +550,9 @@ async function checkMixedMode() {
     return
   }
   const responseImages = responsesResp.body?.images
-  const outputType = responsesResp.body?.output?.[0]?.type
-  if (responsesResp.status === 200 && Array.isArray(responseImages) && responseImages.length > 0 && outputType === 'image_generation_call') {
-    ok(`responses mixed-mode 返回 ${responseImages.length} 张图片,output[0].type=image_generation_call`)
+  const hasImageCall = Array.isArray(responsesResp.body?.output) && responsesResp.body.output.some((x) => x?.type === 'image_generation_call')
+  if (responsesResp.status === 200 && Array.isArray(responseImages) && responseImages.length > 0 && hasImageCall) {
+    ok(`responses mixed-mode 返回 ${responseImages.length} 张图片,output 中包含 image_generation_call`)
   } else {
     bad('responses mixed-mode 成功响应结构异常', `status=${responsesResp.status} code=${openaiCode(responsesResp)} body=${JSON.stringify(responsesResp.body)}`)
   }

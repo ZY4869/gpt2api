@@ -7,7 +7,6 @@ import { formatCredit } from '@/utils/format'
 import {
   listMyModels,
   streamPlayChat,
-  playCreateChat,
   playGenerateImage,
   type SimpleModel,
   type PlayChatMessage,
@@ -74,6 +73,7 @@ const activeTab = ref<'chat' | 'text2img' | 'img2img'>(
 interface UIMessage {
   id: number
   role: 'user' | 'assistant' | 'system'
+  reasoning?: string
   content: string
   images?: PlayMixedImage[]
   pending?: boolean
@@ -129,7 +129,15 @@ async function sendChat() {
   const now = Date.now()
   chatMsgs.value.push({ id: ++uid, role: 'user', content: text, at: now })
   chatInput.value = ''
-  const assistant: UIMessage = { id: ++uid, role: 'assistant', content: '', images: [], pending: true, at: now }
+  const assistant: UIMessage = {
+    id: ++uid,
+    role: 'assistant',
+    reasoning: '',
+    content: '',
+    images: [],
+    pending: true,
+    at: now,
+  }
   chatMsgs.value.push(assistant)
   await scrollChat(true)
 
@@ -148,32 +156,37 @@ async function sendChat() {
   chatSending.value = true
   chatAbort.value = new AbortController()
   try {
-    if (chatImageMode.value) {
-      const resp = await playCreateChat(
-        {
-          model: selectedChatModel.value,
-          messages: history,
-          temperature: temperature.value,
-          image_generation: true,
+    const result = await streamPlayChat(
+      {
+        model: selectedChatModel.value,
+        messages: history,
+        temperature: temperature.value,
+        image_generation: chatImageMode.value,
+      },
+      {
+        onReasoningDelta: (delta) => {
+          assistant.reasoning = (assistant.reasoning || '') + delta
+          assistant.pending = false
+          scrollChat()
         },
-        chatAbort.value.signal,
-      )
-      assistant.content = resp.choices?.[0]?.message?.content || ''
-      assistant.images = resp.images || []
-      assistant.pending = false
-    } else {
-      await streamPlayChat(
-        { model: selectedChatModel.value, messages: history, temperature: temperature.value },
-        (delta) => {
+        onContentDelta: (delta) => {
           assistant.content += delta
           assistant.pending = false
           scrollChat()
         },
-        chatAbort.value.signal,
-      )
-    }
+        onImages: (images) => {
+          assistant.images = images
+          assistant.pending = false
+          scrollChat()
+        },
+      },
+      chatAbort.value.signal,
+    )
+    if (!assistant.reasoning && result.reasoning) assistant.reasoning = result.reasoning
+    if (!assistant.content && result.content) assistant.content = result.content
+    if ((!assistant.images || assistant.images.length === 0) && result.images.length) assistant.images = result.images
     assistant.pending = false
-    if (!assistant.content && !assistant.images?.length) assistant.content = '(无输出)'
+    if (!assistant.reasoning && !assistant.content && !assistant.images?.length) assistant.content = '(无输出)'
   } catch (err: unknown) {
     assistant.pending = false
     assistant.error = true
@@ -218,6 +231,10 @@ function copyText(s: string) {
   } catch {
     ElMessage.warning('复制失败')
   }
+}
+
+function messageCopyText(m: UIMessage): string {
+  return [m.reasoning, m.content].filter((x) => !!x).join('\n\n')
 }
 
 onBeforeUnmount(() => chatAbort.value?.abort())
@@ -535,7 +552,7 @@ watch(activeTab, (v) => {
                 active-text="开"
                 inactive-text="关"
               />
-              <div class="side-hint">开启后会在同一轮 chat 请求里触发生图,并自动切换为非流式返回。</div>
+              <div class="side-hint">开启后会在同一轮 chat 请求里触发生图,思考过程会实时显示,图片会在流末尾返回。</div>
             </div>
 
             <div class="side-row">
@@ -573,7 +590,7 @@ watch(activeTab, (v) => {
                 <div>
                   <div class="chat-model">{{ selectedChatModel || '未选择模型' }}</div>
                   <div class="chat-sub">
-                    {{ chatSending ? (chatImageMode ? '正在生成图片…' : '正在回复…') : (chatMsgs.length ? `${chatMsgs.length} 条消息 · ${chatImageMode ? '生图模式' : '文本模式'}` : '准备就绪') }}
+                    {{ chatSending ? (chatImageMode ? '正在思考并生成图片…' : '正在思考并回复…') : (chatMsgs.length ? `${chatMsgs.length} 条消息 · ${chatImageMode ? '生图模式' : '文本模式'}` : '准备就绪') }}
                   </div>
                 </div>
               </div>
@@ -624,19 +641,32 @@ watch(activeTab, (v) => {
                 <div class="msg-body">
                   <div class="msg-head">
                     <span class="who">{{ m.role === 'user' ? '我' : '助手' }}</span>
-                    <span v-if="!m.pending && m.content" class="copy-btn" @click="copyText(m.content)">
+                    <span v-if="!m.pending && messageCopyText(m)" class="copy-btn" @click="copyText(messageCopyText(m))">
                       <el-icon><CopyDocument /></el-icon> 复制
                     </span>
                   </div>
                   <div class="msg-content">
-                    <div v-if="m.pending && !m.content && !m.images?.length" class="typing">
+                    <div v-if="m.pending && !m.reasoning && !m.content && !m.images?.length" class="typing">
                       <span></span><span></span><span></span>
+                    </div>
+                    <div v-if="m.reasoning" class="reasoning-block">
+                      <div class="reasoning-head">
+                        <el-icon><Cpu /></el-icon>
+                        <span>{{ m.pending ? '实时思考中' : '思考过程' }}</span>
+                      </div>
+                      <div
+                        class="md reasoning-md"
+                        v-html="renderMarkdown(m.reasoning)"
+                      />
                     </div>
                     <div
                       v-if="m.content"
                       class="md"
                       v-html="renderMarkdown(m.content)"
                     />
+                    <div v-if="m.pending && (m.reasoning || m.content) && !m.images?.length" class="reasoning-status">
+                      {{ chatImageMode ? '图片仍在准备中…' : '回答仍在生成中…' }}
+                    </div>
                     <div v-if="m.images?.length" class="chat-image-grid">
                       <div
                         v-for="(img, idx) in m.images"
@@ -677,7 +707,7 @@ watch(activeTab, (v) => {
               <div class="composer-tools">
                 <span class="hint">
                   <el-icon><InfoFilled /></el-icon>
-                  {{ chatImageMode ? '当前为生图模式,将使用非流式返回' : '按 Enter 发送' }}
+                  {{ chatImageMode ? '当前为生图模式,会实时展示思考过程并在结束后返回图片' : '按 Enter 发送' }}
                 </span>
                 <div style="flex:1" />
                 <el-button v-if="chatSending" type="danger" @click="stopChat" round>
@@ -1195,6 +1225,30 @@ watch(activeTab, (v) => {
   font-size: 14px; line-height: 1.75;
   color: var(--el-text-color-primary);
   word-break: break-word;
+}
+.reasoning-block {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: linear-gradient(180deg, var(--el-fill-color-lighter) 0%, var(--el-bg-color) 100%);
+}
+.reasoning-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+}
+.reasoning-md {
+  color: var(--el-text-color-regular);
+}
+.reasoning-status {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 .chat-image-grid {
   display: grid;

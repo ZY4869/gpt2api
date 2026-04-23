@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/432539/gpt2api/internal/apikey"
+	modelpkg "github.com/432539/gpt2api/internal/model"
 	"github.com/432539/gpt2api/internal/usage"
 )
 
@@ -53,16 +55,6 @@ func TestChatCompletionsMixedMode_Golden(t *testing.T) {
 			},
 			wantStatus: usage.StatusSuccess,
 			wantType:   usage.TypeImage,
-		},
-		{
-			name:       "stream_unsupported",
-			body:       `{"model":"gpt-5","image_generation":true,"stream":true,"messages":[{"role":"user","content":"画一只橘猫"}]}`,
-			golden:     "chat_mixed_stream_unsupported.json",
-			statusCode: http.StatusBadRequest,
-			settings:   fakeSettings{mixedEnabled: true},
-			wantCode:   "image_generation_stream_unsupported",
-			wantStatus: usage.StatusFailed,
-			wantType:   usage.TypeChat,
 		},
 		{
 			name:       "feature_disabled",
@@ -179,14 +171,6 @@ func TestResponsesMixedMode_Golden(t *testing.T) {
 			wantStatus: usage.StatusFailed,
 		},
 		{
-			name:       "stream_unsupported",
-			body:       `{"model":"gpt-5","input":"你好","image_generation":true,"stream":true}`,
-			golden:     "responses_mixed_stream_unsupported.json",
-			statusCode: http.StatusBadRequest,
-			wantCode:   "image_generation_stream_unsupported",
-			wantStatus: usage.StatusFailed,
-		},
-		{
 			name:       "upstream_not_returned",
 			body:       `{"model":"gpt-5","input":"画一张极简主义太空旅行海报","tools":[{"type":"image_generation"}],"stream":false}`,
 			golden:     "responses_mixed_upstream_not_returned.json",
@@ -231,6 +215,167 @@ func TestResponsesMixedMode_Golden(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMixedModeStreamingProtocols(t *testing.T) {
+	ak := &apikey.APIKey{ID: 7, UserID: 9, Enabled: true}
+
+	makeHandler := func(
+		streamRunner mixedModeConversationStreamRunnerFunc,
+	) (*Handler, *fakeUsageStore) {
+		chatModel := &modelpkg.Model{ID: 11, Slug: "gpt-5-thinking", Type: modelpkg.TypeChat, Enabled: true}
+		imageModel := &modelpkg.Model{ID: 22, Slug: "gpt-image-2", Type: modelpkg.TypeImage, Enabled: true, ImagePricePerCall: 300}
+		usageSink := &fakeUsageStore{}
+		bill := &fakeBillingStore{}
+		keyDAO := &fakeKeyDAO{}
+		h := &Handler{
+			Usage:    usageSink,
+			Settings: fakeSettings{mixedEnabled: true},
+			Models: &fakeModelStore{
+				bySlug:  map[string]*modelpkg.Model{"gpt-5-thinking": chatModel, "gpt-image-2": imageModel},
+				enabled: []*modelpkg.Model{chatModel, imageModel},
+			},
+			Billing:                           bill,
+			Keys:                              fakeKeyStore{dao: keyDAO},
+			mixedModeConversationStreamRunner: streamRunner,
+		}
+		h.Images = &ImagesHandler{
+			Handler:          h,
+			DAO:              &fakeImageTaskStore{},
+			ImageAccResolver: stubImageAccountResolver{},
+		}
+		return h, usageSink
+	}
+
+	t.Run("chat_completions_stream", func(t *testing.T) {
+		withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "mixed-chat-stream")
+		withFrozenImageTaskIDs(t, "task_stream_chat")
+		h, usageSink := makeHandler(func(_ context.Context, taskID string, _ *modelpkg.Model, req *mixedModePreparedRequest, sink mixedModeStreamSink) (*mixedModeExecResult, *mixedModeAPIError) {
+			if req.RequestedN != 1 {
+				t.Fatalf("requested_n = %d, want 1", req.RequestedN)
+			}
+			sink.OnReasoningDelta("先规划角色动作。")
+			sink.OnAssistantDelta("我会生成一张透明背景故事图。")
+			return &mixedModeExecResult{
+				TaskID:         taskID,
+				AccountID:      88,
+				ConversationID: "conv_stream_chat",
+				ReasoningText:  "先规划角色动作。",
+				AssistantText:  "我会生成一张透明背景故事图。",
+				FileRefs:       []string{"file_stream_chat"},
+				SignedURLs:     []string{"https://signed.example/chat"},
+				Images: []MixedModeImage{{
+					URL:         "/p/img/task_stream_chat/0?exp=1710892800000&sig=chatstream",
+					FileID:      "file_stream_chat",
+					ContentType: "image/png",
+					TaskID:      taskID,
+				}},
+			}, nil
+		})
+		c, w := newJSONContext(t, "/v1/chat/completions", `{"model":"gpt-5-thinking","image_generation":true,"stream":true,"messages":[{"role":"user","content":"生成一张连续故事图"}]}`, ak)
+		h.ChatCompletions(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		assertTextGolden(t, w.Body.String(), "chat_mixed_stream_success.sse")
+		if len(usageSink.rows) != 1 || usageSink.rows[0].Status != usage.StatusSuccess {
+			t.Fatalf("usage rows = %#v", usageSink.rows)
+		}
+	})
+
+	t.Run("responses_stream", func(t *testing.T) {
+		withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "resp_stream_created", "resp_stream_message", "resp_stream_image")
+		withFrozenImageTaskIDs(t, "task_stream_resp")
+		h, usageSink := makeHandler(func(_ context.Context, taskID string, _ *modelpkg.Model, _ *mixedModePreparedRequest, sink mixedModeStreamSink) (*mixedModeExecResult, *mixedModeAPIError) {
+			sink.OnReasoningDelta("先拆分为两镜头。")
+			sink.OnAssistantDelta("我会保持角色一致和透明背景。")
+			return &mixedModeExecResult{
+				TaskID:         taskID,
+				AccountID:      99,
+				ConversationID: "conv_stream_resp",
+				ReasoningText:  "先拆分为两镜头。",
+				AssistantText:  "我会保持角色一致和透明背景。",
+				FileRefs:       []string{"file_stream_resp"},
+				SignedURLs:     []string{"https://signed.example/resp"},
+				Images: []MixedModeImage{{
+					URL:         "/p/img/task_stream_resp/0?exp=1710892800000&sig=respstream",
+					FileID:      "file_stream_resp",
+					ContentType: "image/png",
+					TaskID:      taskID,
+				}},
+			}, nil
+		})
+		c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-thinking","input":"生成两张连续故事图","tools":[{"type":"image_generation"}],"stream":true}`, ak)
+		h.Responses(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		assertTextGolden(t, w.Body.String(), "responses_mixed_stream_success.sse")
+		if len(usageSink.rows) != 1 || usageSink.rows[0].Status != usage.StatusSuccess {
+			t.Fatalf("usage rows = %#v", usageSink.rows)
+		}
+	})
+}
+
+func TestMixedModeStreamingFailureEvents(t *testing.T) {
+	ak := &apikey.APIKey{ID: 7, UserID: 9, Enabled: true}
+	chatModel := &modelpkg.Model{ID: 11, Slug: "gpt-5-thinking", Type: modelpkg.TypeChat, Enabled: true}
+	imageModel := &modelpkg.Model{ID: 22, Slug: "gpt-image-2", Type: modelpkg.TypeImage, Enabled: true, ImagePricePerCall: 300}
+
+	makeHandler := func() (*Handler, *fakeUsageStore) {
+		usageSink := &fakeUsageStore{}
+		h := &Handler{
+			Usage:    usageSink,
+			Settings: fakeSettings{mixedEnabled: true},
+			Models: &fakeModelStore{
+				bySlug:  map[string]*modelpkg.Model{"gpt-5-thinking": chatModel, "gpt-image-2": imageModel},
+				enabled: []*modelpkg.Model{chatModel, imageModel},
+			},
+			Billing: &fakeBillingStore{},
+			Keys:    fakeKeyStore{dao: &fakeKeyDAO{}},
+			mixedModeConversationStreamRunner: func(context.Context, string, *modelpkg.Model, *mixedModePreparedRequest, mixedModeStreamSink) (*mixedModeExecResult, *mixedModeAPIError) {
+				return nil, &mixedModeAPIError{
+					Status:  http.StatusBadGateway,
+					Code:    "thinking_not_triggered",
+					Message: "thinking 模型本轮未触发思考过程,已判定生成失败,请重试",
+				}
+			},
+		}
+		h.Images = &ImagesHandler{
+			Handler:          h,
+			DAO:              &fakeImageTaskStore{},
+			ImageAccResolver: stubImageAccountResolver{},
+		}
+		return h, usageSink
+	}
+
+	t.Run("chat_completions_error_event", func(t *testing.T) {
+		withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "mixed-chat-stream-failed")
+		h, usageSink := makeHandler()
+		c, w := newJSONContext(t, "/v1/chat/completions", `{"model":"gpt-5-thinking","image_generation":true,"stream":true,"messages":[{"role":"user","content":"生成两张连续故事图"}]}`, ak)
+		h.ChatCompletions(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		assertTextGolden(t, w.Body.String(), "chat_mixed_stream_failed.sse")
+		if len(usageSink.rows) != 1 || usageSink.rows[0].ErrorCode != "thinking_not_triggered" {
+			t.Fatalf("usage rows = %#v", usageSink.rows)
+		}
+	})
+
+	t.Run("responses_failed_event", func(t *testing.T) {
+		withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "resp_stream_failed")
+		h, usageSink := makeHandler()
+		c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-thinking","input":"生成两张连续故事图","tools":[{"type":"image_generation"}],"stream":true}`, ak)
+		h.Responses(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		assertTextGolden(t, w.Body.String(), "responses_mixed_stream_failed.sse")
+		if len(usageSink.rows) != 1 || usageSink.rows[0].ErrorCode != "thinking_not_triggered" {
+			t.Fatalf("usage rows = %#v", usageSink.rows)
+		}
+	})
 }
 
 func TestMixedModeRejectsNWithoutImageGeneration(t *testing.T) {

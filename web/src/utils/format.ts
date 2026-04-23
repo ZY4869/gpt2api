@@ -95,7 +95,6 @@ const ERROR_CODE_LABEL: Record<string, string> = {
   // 功能未开启
   image_not_wired: '图片能力未接入,请联系管理员',
   feature_disabled: '该功能已被管理员关闭',
-  image_generation_stream_unsupported: '对话框生图暂不支持流式返回',
 
   // 上游
   upstream_error: '上游服务返回错误',
@@ -103,6 +102,7 @@ const ERROR_CODE_LABEL: Record<string, string> = {
   upstream_unavailable: '上游暂不可用',
   upstream_image_not_returned: '上游本轮对话未返回图片结果',
   upstream_image_download_failed: '上游图片下载链接获取失败',
+  thinking_not_triggered: 'thinking 模型本轮未触发思考过程,已判定生成失败,请重试',
   account_exhausted: '账号池暂无可用账号,请稍后重试',
   account_cooldown: '账号冷却中,请稍后重试',
   proxy_unhealthy: '代理不健康',

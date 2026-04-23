@@ -28,6 +28,8 @@ import (
 // ErrNoAvailable 没有任何账号可用。
 var ErrNoAvailable = errors.New("scheduler: no available account")
 
+var errNoPaidCandidate = errors.New("scheduler: no paid candidate available")
+
 // Lease 代表一次账号占用的租约。
 type Lease struct {
 	Account     *account.Account
@@ -39,6 +41,7 @@ type Lease struct {
 	lockKey     string
 	lockToken   string
 	releaseFunc func(context.Context) error
+	abortFunc   func(context.Context) error
 }
 
 // Release 释放锁并更新账号 last_used_at / today_used。
@@ -47,6 +50,21 @@ func (l *Lease) Release(ctx context.Context) error {
 		return l.releaseFunc(ctx)
 	}
 	return nil
+}
+
+// Abort 仅释放锁,不更新账号使用计数。用于上游在真正发起请求前就判定要换号的场景。
+func (l *Lease) Abort(ctx context.Context) error {
+	if l.abortFunc != nil {
+		return l.abortFunc(ctx)
+	}
+	return l.Release(ctx)
+}
+
+// DispatchOptions 描述一次调度请求的过滤条件。
+type DispatchOptions struct {
+	ModelType         string
+	RequirePaid       bool
+	ExcludeAccountIDs map[uint64]struct{}
 }
 
 // RuntimeParams 调度器运行期可热更的参数。
@@ -144,7 +162,10 @@ func (s *Scheduler) queueWait() time.Duration {
 //   - 扫一遍所有 candidate 都被锁住 / 不满足 min_interval / 日配额时,
 //     不立即返回失败,而是按指数退避轮询重试,直到拿到锁或超过 queueWait。
 //   - queueWait=0 时退化为老语义(扫一次,失败即返回 ErrNoAvailable)。
-func (s *Scheduler) Dispatch(ctx context.Context, modelType string) (*Lease, error) {
+func (s *Scheduler) Dispatch(ctx context.Context, opt DispatchOptions) (*Lease, error) {
+	if opt.ModelType == "" {
+		opt.ModelType = "chat"
+	}
 	deadline := time.Now().Add(s.queueWait())
 
 	const (
@@ -158,15 +179,20 @@ func (s *Scheduler) Dispatch(ctx context.Context, modelType string) (*Lease, err
 
 	for {
 		attempt++
-		lease, err := s.tryDispatchOnce(ctx, modelType)
+		lease, err := s.tryDispatchOnce(ctx, opt)
 		if err == nil {
 			if attempt > 1 {
 				logger.L().Info("scheduler queued dispatch ok",
 					zap.Int("attempt", attempt),
 					zap.Duration("waited", time.Since(start)),
-					zap.Uint64("account_id", lease.Account.ID))
+					zap.Uint64("account_id", lease.Account.ID),
+					zap.Bool("require_paid", opt.RequirePaid),
+					zap.Int("excluded_account_ids_count", len(opt.ExcludeAccountIDs)))
 			}
 			return lease, nil
+		}
+		if errors.Is(err, errNoPaidCandidate) {
+			return nil, ErrNoAvailable
 		}
 		if !errors.Is(err, ErrNoAvailable) {
 			return nil, err
@@ -198,14 +224,21 @@ func (s *Scheduler) Dispatch(ctx context.Context, modelType string) (*Lease, err
 
 // tryDispatchOnce 扫一遍 candidate,尝试为其中一个加锁;
 // 全部 candidate 都被锁 / 不满足 min_interval / 日配额时返回 ErrNoAvailable。
-func (s *Scheduler) tryDispatchOnce(ctx context.Context, modelType string) (*Lease, error) {
+func (s *Scheduler) tryDispatchOnce(ctx context.Context, opt DispatchOptions) (*Lease, error) {
 	limit := 30
 	dao := s.accSvc.DAO()
-	candidates, err := dao.ListDispatchable(ctx, limit)
+	candidates, err := dao.ListDispatchable(ctx, account.DispatchableFilter{
+		Limit:             limit,
+		RequirePaid:       opt.RequirePaid,
+		ExcludeAccountIDs: mapKeys(opt.ExcludeAccountIDs),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("scheduler list: %w", err)
 	}
 	if len(candidates) == 0 {
+		if opt.RequirePaid {
+			return nil, errNoPaidCandidate
+		}
 		return nil, ErrNoAvailable
 	}
 
@@ -305,6 +338,9 @@ func (s *Scheduler) tryLock(ctx context.Context, acc *account.Account) (*Lease, 
 		lockKey:   key,
 		lockToken: token,
 	}
+	lease.abortFunc = func(c context.Context) error {
+		return s.lock.Release(c, key, token)
+	}
 	lease.releaseFunc = func(c context.Context) error {
 		today := truncateDay(time.Now())
 		_ = s.accSvc.DAO().MarkUsed(c, accCopy.ID, today)
@@ -330,6 +366,11 @@ func (s *Scheduler) MarkDead(ctx context.Context, accountID uint64) {
 	_ = s.accSvc.DAO().SetStatus(ctx, accountID, account.StatusDead, nil)
 }
 
+// MarkFree 把运行时识别出的免费 persona 回写到账号表,便于后续 thinking 调度直接跳过。
+func (s *Scheduler) MarkFree(ctx context.Context, accountID uint64) {
+	_ = s.accSvc.DAO().UpdatePlanType(ctx, accountID, "free")
+}
+
 // RestoreHealthy 调度成功后回归健康(仅对 throttled 且冷却到期有效,
 // 简单起见此处不强检查,由管理员按需恢复)。
 func (s *Scheduler) RestoreHealthy(ctx context.Context, accountID uint64) {
@@ -344,4 +385,15 @@ func truncateDay(t time.Time) time.Time {
 
 func sameDay(a, b time.Time) bool {
 	return a.Year() == b.Year() && a.Month() == b.Month() && a.Day() == b.Day()
+}
+
+func mapKeys(m map[uint64]struct{}) []uint64 {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]uint64, 0, len(m))
+	for id := range m {
+		out = append(out, id)
+	}
+	return out
 }

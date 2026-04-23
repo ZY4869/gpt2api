@@ -47,8 +47,15 @@ type Handler struct {
 	// Images 可选:若挂载,chat/completions 里指定图像模型会自动转派。
 	Images *ImagesHandler
 	// mixedModeExec / mixedModeConversationRunner 仅用于测试注入。
-	mixedModeExec               mixedModeExecFunc
-	mixedModeConversationRunner mixedModeConversationRunnerFunc
+	mixedModeExec                     mixedModeExecFunc
+	mixedModeConversationRunner       mixedModeConversationRunnerFunc
+	mixedModeConversationStreamRunner mixedModeConversationStreamRunnerFunc
+	dispatchChatLeaseFunc             func(context.Context, scheduler.DispatchOptions) (*scheduler.Lease, error)
+	loadChatRequirementsFunc          func(context.Context, *scheduler.Lease) (*chatgpt.Client, *chatgpt.ChatRequirementsResp, error)
+	abortLeaseFunc                    func(context.Context, *scheduler.Lease) error
+	markFreeAccountFunc               func(context.Context, uint64)
+	markRateLimitedAccountFunc        func(context.Context, uint64)
+	markDeadAccountFunc               func(context.Context, uint64)
 
 	// Settings 可选:若注入则在构造上游 client 时应用动态超时。
 	Settings interface {
@@ -256,31 +263,35 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		_ = h.Billing.Refund(context.Background(), ak.UserID, ak.ID, estCost, refID, "chat refund")
 	}
 
-	// 4) 调度账号
-	lease, err := h.Scheduler.Dispatch(c.Request.Context(), modelpkg.TypeChat)
+	thinkingModel := thinkingDispatchRequired(m)
+
+	// 4) 调度账号 + 初始化上游会话(requirePaid 的 thinking 请求会在调度和运行期都跳过 free 账号)
+	lease, cli, cr, excluded, err := h.acquireChatRequirements(c.Request.Context(), rec.RequestID, m)
 	if err != nil {
-		refund("no_account_available")
-		openAIError(c, http.StatusServiceUnavailable, "no_account_available", "账号池暂无可用账号,请稍后重试")
+		if errors.Is(err, scheduler.ErrNoAvailable) {
+			refund("no_account_available")
+			openAIError(c, http.StatusServiceUnavailable, "no_account_available", "账号池暂无可用账号,请稍后重试")
+			return
+		}
+		if lease != nil {
+			rec.AccountID = lease.Account.ID
+			defer func() { _ = lease.Release(context.Background()) }()
+			h.handleUpstreamErr(c, lease, err, func() { refund("upstream_error") })
+			return
+		}
+		refund("upstream_init_error")
+		openAIError(c, http.StatusInternalServerError, "upstream_init_error", "上游客户端初始化失败:"+err.Error())
 		return
 	}
 	rec.AccountID = lease.Account.ID
 	defer func() { _ = lease.Release(context.Background()) }()
 
-	// 5) 构造上游 client
-	cookies, _ := h.AccSvc.DecryptCookies(c.Request.Context(), lease.Account.ID)
-	cli, err := chatgpt.New(chatgpt.Options{
-		AuthToken: lease.AuthToken,
-		DeviceID:  lease.DeviceID,
-		SessionID: lease.SessionID,
-		ProxyURL:  lease.ProxyURL,
-		Cookies:   cookies,
-		Timeout:   h.upstreamTimeout(),
-	})
-	if err != nil {
-		refund("upstream_init_error")
-		openAIError(c, http.StatusInternalServerError, "upstream_init_error", "上游客户端初始化失败:"+err.Error())
-		return
-	}
+	logger.L().Info("chat upstream session ready",
+		zap.String("request_id", rec.RequestID),
+		zap.Uint64("account_id", lease.Account.ID),
+		zap.Bool("require_paid", thinkingModel),
+		zap.String("persona", cr.Persona),
+		zap.Int("excluded_account_ids_count", len(excluded)))
 
 	upstreamModel := m.UpstreamModelSlug
 	if upstreamModel == "" {
@@ -296,31 +307,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// 管理员若在 models.upstream_model_slug 直接填了带版本号的 slug(如
 	// "gpt-5-3"),本映射是 no-op。
 	upstreamModel = mapUpstreamModelSlug(upstreamModel)
-
-	// 对齐 Python 参考实现(gen_image.py,已验证可用)的真实顺序:
-	//   (a) Bootstrap GET /                  —— 拿 __cf_bm / oai-did / _cfuvid cookie
-	//   (b) sentinel/chat-requirements       —— 拿 chat_token + proofofwork 描述
-	//   (c) f/conversation/prepare           —— 带 chat_token(!) + proof_token,拿 conduit_token
-	//   (d) f/conversation                   —— 带 chat_token + proof_token + conduit_token 发 SSE
-	//
-	// Python 参考实现 gen_image.py 的 prepare_fconversation 明确要 chat_token,
-	// 且不带 sentinel header 会让 prepare 返回空 conduit_token。
-
-	// (a) Bootstrap
-	bootCtx, cancelBoot := context.WithTimeout(c.Request.Context(), 15*time.Second)
-	_ = cli.Bootstrap(bootCtx)
-	cancelBoot()
-
-	// (b) chat-requirements —— 优先走新两步协议(prepare + finalize),solver 未配置
-	// 或失败时会自动回退到单步老接口(V2 内部实现)。
-	reqCtx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
-	defer cancel()
-
-	cr, err := cli.ChatRequirementsV2(reqCtx)
-	if err != nil {
-		h.handleUpstreamErr(c, lease, err, func() { refund("upstream_error") })
-		return
-	}
 
 	// POW(异步,5s 超时)
 	var proofToken string
@@ -355,10 +341,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			zap.Uint64("account_id", lease.Account.ID))
 	}
 
-	// 免费账号(persona=chatgpt-freeaccount)对高级模型(如 gpt-5)会静默不生成,
-	// SSE 只会下发一条 hidden system preamble 就结束。chatgpt.com 浏览器端对免费账号
-	// 实际发的 model 就是 "auto",由上游自己选。我们强制降级,避免"哑巴失败"。
-	if cr.IsFreeAccount() && upstreamModel != "auto" {
+	// thinking 请求已经在调度和运行期都严格排除 free persona。
+	// 普通 chat 仍保留历史兼容降级:免费账号强制改成 auto,避免静默拒绝。
+	if cr.IsFreeAccount() && upstreamModel != "auto" && !thinkingModel {
 		logger.L().Warn("free account requesting premium model, downgrade to auto",
 			zap.Uint64("account_id", lease.Account.ID),
 			zap.String("requested_model", upstreamModel))
@@ -393,6 +378,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		zap.Int("conduit_len", len(conduit)),
 		zap.Bool("turnstile_required", cr.Turnstile.Required),
 		zap.String("persona", cr.Persona),
+		zap.Bool("require_paid", thinkingModel),
 	)
 
 	// (d) f/conversation SSE
@@ -405,9 +391,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// 8) 转发响应
 	id := "chatcmpl-" + uuid.NewString()
 	if req.Stream {
-		h.streamOpenAI(c, id, req.Model, stream, cr.IsFreeAccount())
+		h.streamOpenAI(c, id, req.Model, stream, cr.IsFreeAccount(), thinkingModel)
 	} else {
-		h.collectOpenAI(c, id, req.Model, stream, cr.IsFreeAccount())
+		h.collectOpenAI(c, id, req.Model, stream, cr.IsFreeAccount(), thinkingModel)
 	}
 
 	// 9) 结算
@@ -437,7 +423,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 // streamOpenAI 将上游 SSE 事件转为 OpenAI 风格流式响应。
 // freeAccount 标记上游 persona 是 chatgpt-freeaccount,用于在"没拿到任何内容"
 // 的兜底分支给出更精准的错误消息(免费账号会被上游静默拒绝)。
-func (h *Handler) streamOpenAI(c *gin.Context, id, model string, stream <-chan chatgpt.SSEEvent, freeAccount bool) {
+func (h *Handler) streamOpenAI(c *gin.Context, id, model string, stream <-chan chatgpt.SSEEvent, freeAccount, thinkingModel bool) {
 	w := c.Writer
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -449,9 +435,7 @@ func (h *Handler) streamOpenAI(c *gin.Context, id, model string, stream <-chan c
 	// 先发一个 role=assistant 的空 delta(OpenAI 规范起始)
 	writeChunk(w, flusher, id, model, DeltaMsg{Role: "assistant"}, nil)
 
-	var extr deltaExtractor
-	var total strings.Builder
-
+	collector := chatgpt.NewStreamMessageCollector()
 	evCount := 0
 	silentlyRejected := false
 	for ev := range stream {
@@ -474,24 +458,27 @@ func (h *Handler) streamOpenAI(c *gin.Context, id, model string, stream <-chan c
 		if !silentlyRejected && isSilentRejection(ev.Data) {
 			silentlyRejected = true
 		}
-		delta, final, err := extr.Extract(ev.Data)
-		if err != nil {
-			continue
+		update := collector.Consume(ev.Data)
+		if delta := strings.TrimSpace(update.ReasoningDelta); delta != "" {
+			writeChunk(w, flusher, id, model, DeltaMsg{Reasoning: delta}, nil)
 		}
-		if delta != "" {
-			total.WriteString(delta)
+		if delta := update.AssistantDelta; delta != "" {
 			writeChunk(w, flusher, id, model, DeltaMsg{Content: delta}, nil)
 		}
-		if final {
+		if update.Final {
 			break
 		}
 	}
+
+	finalState := collector.Result()
 	logger.L().Info("chat sse done", zap.Int("events", evCount),
-		zap.Int("content_len", total.Len()),
-		zap.Bool("silently_rejected", silentlyRejected))
+		zap.Int("content_len", len(finalState.AssistantText)),
+		zap.Int("reasoning_len", len(finalState.ReasoningText)),
+		zap.Bool("silently_rejected", silentlyRejected),
+		zap.Bool("thinking_triggered", finalState.ReasoningText != ""))
 
 	// 兜底:上游接受了请求但没产出任何可见文本
-	if total.Len() == 0 && evCount > 0 {
+	if finalState.AssistantText == "" && finalState.ReasoningText == "" && evCount > 0 {
 		writeChunk(w, flusher, id, model, DeltaMsg{Content: emptyReplyMessage(freeAccount, silentlyRejected)}, nil)
 	}
 
@@ -502,13 +489,15 @@ func (h *Handler) streamOpenAI(c *gin.Context, id, model string, stream <-chan c
 		flusher.Flush()
 	}
 
-	// 把内容长度记录到 ctx 供结算使用。
-	c.Set("completion_tokens", (total.Len()+3)/4)
+	// completion_tokens 仍只按最终 assistant 正文估算,reasoning 独立透出。
+	c.Set("completion_tokens", (len(finalState.AssistantText)+3)/4)
+	if thinkingModel && finalState.ReasoningText != "" {
+		c.Set("reasoning_text", finalState.ReasoningText)
+	}
 }
 
-func (h *Handler) collectOpenAI(c *gin.Context, id, model string, stream <-chan chatgpt.SSEEvent, freeAccount bool) {
-	var extr deltaExtractor
-	var content strings.Builder
+func (h *Handler) collectOpenAI(c *gin.Context, id, model string, stream <-chan chatgpt.SSEEvent, freeAccount, thinkingModel bool) {
+	collector := chatgpt.NewStreamMessageCollector()
 	evCount := 0
 	silentlyRejected := false
 	for ev := range stream {
@@ -528,25 +517,28 @@ func (h *Handler) collectOpenAI(c *gin.Context, id, model string, stream <-chan 
 		if !silentlyRejected && isSilentRejection(ev.Data) {
 			silentlyRejected = true
 		}
-		delta, final, _ := extr.Extract(ev.Data)
-		if delta != "" {
-			content.WriteString(delta)
-		}
-		if final {
+		update := collector.Consume(ev.Data)
+		if update.Final {
 			break
 		}
 	}
+	finalState := collector.Result()
 	logger.L().Info("chat collect done", zap.Int("events", evCount),
-		zap.Int("content_len", content.Len()),
-		zap.Bool("silently_rejected", silentlyRejected))
+		zap.Int("content_len", len(finalState.AssistantText)),
+		zap.Int("reasoning_len", len(finalState.ReasoningText)),
+		zap.Bool("silently_rejected", silentlyRejected),
+		zap.Bool("thinking_triggered", finalState.ReasoningText != ""))
 
 	// 兜底:上游接受了请求但没产出任何可见文本(见 streamOpenAI 同名兜底的说明)
-	if content.Len() == 0 && evCount > 0 {
-		content.WriteString(emptyReplyMessage(freeAccount, silentlyRejected))
+	if finalState.AssistantText == "" && finalState.ReasoningText == "" && evCount > 0 {
+		finalState.AssistantText = emptyReplyMessage(freeAccount, silentlyRejected)
 	}
 
-	completionTokens := (content.Len() + 3) / 4
+	completionTokens := (len(finalState.AssistantText) + 3) / 4
 	c.Set("completion_tokens", completionTokens)
+	if thinkingModel && finalState.ReasoningText != "" {
+		c.Set("reasoning_text", finalState.ReasoningText)
+	}
 
 	resp := ChatCompletionResponse{
 		ID:      id,
@@ -555,7 +547,8 @@ func (h *Handler) collectOpenAI(c *gin.Context, id, model string, stream <-chan 
 		Model:   model,
 		Choices: []ChatCompletionChoice{{
 			Index:        0,
-			Message:      chatgpt.ChatMessage{Role: "assistant", Content: content.String()},
+			Message:      chatgpt.ChatMessage{Role: "assistant", Content: finalState.AssistantText},
+			Reasoning:    strings.TrimSpace(finalState.ReasoningText),
 			FinishReason: "stop",
 		}},
 		Usage: ChatCompletionUsage{
@@ -582,9 +575,9 @@ func (h *Handler) handleUpstreamErr(c *gin.Context, lease *scheduler.Lease, err 
 	if errors.As(err, &ue) {
 		switch {
 		case ue.IsRateLimited():
-			h.Scheduler.MarkRateLimited(c.Request.Context(), lease.Account.ID)
+			h.markRateLimitedAccount(c.Request.Context(), lease.Account.ID)
 		case ue.IsUnauthorized():
-			h.Scheduler.MarkDead(c.Request.Context(), lease.Account.ID)
+			h.markDeadAccount(c.Request.Context(), lease.Account.ID)
 		}
 		refund()
 		logger.L().Error("chat upstream error",

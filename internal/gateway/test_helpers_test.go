@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,6 +284,23 @@ func withFrozenResponseMeta(t *testing.T, at time.Time, ids ...string) {
 	})
 }
 
+func withFrozenImageTaskIDs(t *testing.T, ids ...string) {
+	t.Helper()
+	oldTaskID := imageTaskIDFunc
+	idx := 0
+	imageTaskIDFunc = func() string {
+		if idx >= len(ids) {
+			return "img_fixture_task"
+		}
+		v := ids[idx]
+		idx++
+		return v
+	}
+	t.Cleanup(func() {
+		imageTaskIDFunc = oldTaskID
+	})
+}
+
 func assertJSONGolden(t *testing.T, got []byte, name string) {
 	t.Helper()
 	want, err := os.ReadFile(filepath.Join("testdata", name))
@@ -303,4 +321,18 @@ func assertJSONGolden(t *testing.T, got []byte, name string) {
 	gotPretty, _ := json.MarshalIndent(gotJSON, "", "  ")
 	wantPretty, _ := json.MarshalIndent(wantJSON, "", "  ")
 	t.Fatalf("json mismatch for %s\nwant:\n%s\n\ngot:\n%s", name, string(wantPretty), string(gotPretty))
+}
+
+func assertTextGolden(t *testing.T, got string, name string) {
+	t.Helper()
+	want, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read golden %s: %v", name, err)
+	}
+	got = strings.TrimRight(got, "\r\n")
+	wantText := strings.TrimRight(string(want), "\r\n")
+	if got == wantText {
+		return
+	}
+	t.Fatalf("text mismatch for %s\nwant:\n%s\n\ngot:\n%s", name, wantText, got)
 }

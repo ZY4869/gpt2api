@@ -10,6 +10,8 @@ import (
 	"github.com/432539/gpt2api/internal/apikey"
 	"github.com/432539/gpt2api/internal/image"
 	modelpkg "github.com/432539/gpt2api/internal/model"
+	"github.com/432539/gpt2api/internal/scheduler"
+	"github.com/432539/gpt2api/internal/upstream/chatgpt"
 	"github.com/432539/gpt2api/internal/usage"
 	"github.com/432539/gpt2api/internal/user"
 )
@@ -67,9 +69,23 @@ type mixedModeConversationRunnerFunc func(
 	req *mixedModePreparedRequest,
 ) (*mixedModeExecResult, *mixedModeAPIError)
 
+type mixedModeStreamSink interface {
+	OnReasoningDelta(text string)
+	OnAssistantDelta(text string)
+}
+
+type mixedModeConversationStreamRunnerFunc func(
+	ctx context.Context,
+	taskID string,
+	chatModel *modelpkg.Model,
+	req *mixedModePreparedRequest,
+	sink mixedModeStreamSink,
+) (*mixedModeExecResult, *mixedModeAPIError)
+
 var (
-	nowFunc     = time.Now
-	newUUIDFunc = uuid.NewString
+	nowFunc         = time.Now
+	newUUIDFunc     = uuid.NewString
+	imageTaskIDFunc = image.GenerateTaskID
 )
 
 func (h *Handler) writeUsage(rec *usage.Log) {
@@ -108,4 +124,81 @@ func (h *Handler) callMixedModeConversation(
 		return h.mixedModeConversationRunner(ctx, taskID, chatModel, req)
 	}
 	return h.runMixedModeChatImageConversation(ctx, taskID, chatModel, req)
+}
+
+func (h *Handler) callMixedModeConversationStream(
+	ctx context.Context,
+	taskID string,
+	chatModel *modelpkg.Model,
+	req *mixedModePreparedRequest,
+	sink mixedModeStreamSink,
+) (*mixedModeExecResult, *mixedModeAPIError) {
+	if h.mixedModeConversationStreamRunner != nil {
+		return h.mixedModeConversationStreamRunner(ctx, taskID, chatModel, req, sink)
+	}
+	return h.runMixedModeChatImageConversationStream(ctx, taskID, chatModel, req, sink)
+}
+
+func (h *Handler) dispatchChatLease(
+	ctx context.Context,
+	opt scheduler.DispatchOptions,
+) (*scheduler.Lease, error) {
+	if h.dispatchChatLeaseFunc != nil {
+		return h.dispatchChatLeaseFunc(ctx, opt)
+	}
+	return h.Scheduler.Dispatch(ctx, opt)
+}
+
+func (h *Handler) loadChatRequirements(
+	ctx context.Context,
+	lease *scheduler.Lease,
+) (*chatgpt.Client, *chatgpt.ChatRequirementsResp, error) {
+	if h.loadChatRequirementsFunc != nil {
+		return h.loadChatRequirementsFunc(ctx, lease)
+	}
+	cli, err := h.newChatGPTClient(ctx, lease)
+	if err != nil {
+		return nil, nil, err
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cr, err := cli.ChatRequirementsV2(reqCtx)
+	if err != nil {
+		return cli, nil, err
+	}
+	return cli, cr, nil
+}
+
+func (h *Handler) abortLease(ctx context.Context, lease *scheduler.Lease) error {
+	if lease == nil {
+		return nil
+	}
+	if h.abortLeaseFunc != nil {
+		return h.abortLeaseFunc(ctx, lease)
+	}
+	return lease.Abort(ctx)
+}
+
+func (h *Handler) markFreeAccount(ctx context.Context, accountID uint64) {
+	if h.markFreeAccountFunc != nil {
+		h.markFreeAccountFunc(ctx, accountID)
+		return
+	}
+	h.Scheduler.MarkFree(ctx, accountID)
+}
+
+func (h *Handler) markRateLimitedAccount(ctx context.Context, accountID uint64) {
+	if h.markRateLimitedAccountFunc != nil {
+		h.markRateLimitedAccountFunc(ctx, accountID)
+		return
+	}
+	h.Scheduler.MarkRateLimited(ctx, accountID)
+}
+
+func (h *Handler) markDeadAccount(ctx context.Context, accountID uint64) {
+	if h.markDeadAccountFunc != nil {
+		h.markDeadAccountFunc(ctx, accountID)
+		return
+	}
+	h.Scheduler.MarkDead(ctx, accountID)
 }

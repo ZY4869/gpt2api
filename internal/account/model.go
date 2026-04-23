@@ -2,6 +2,7 @@ package account
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -67,4 +68,13 @@ type Binding struct {
 	AccountID uint64    `db:"account_id" json:"account_id"`
 	ProxyID   uint64    `db:"proxy_id" json:"proxy_id"`
 	BoundAt   time.Time `db:"bound_at" json:"bound_at"`
+}
+
+// IsKnownFree 判断账号是否已知为免费账号。
+func (a *Account) IsKnownFree() bool {
+	if a == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(a.PlanType), "free") ||
+		strings.EqualFold(strings.TrimSpace(a.AccountType), "free")
 }

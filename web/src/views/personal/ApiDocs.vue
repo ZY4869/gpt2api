@@ -124,7 +124,11 @@ resp = client.chat.completions.create(
     stream=True,
 )
 for chunk in resp:
-    print(chunk.choices[0].delta.content or "", end="")`
+    delta = chunk.choices[0].delta
+    if getattr(delta, "reasoning", None):
+        print("[thinking]", delta.reasoning, end="")
+    if delta.content:
+        print(delta.content, end="")`
 })
 
 const chatImageCurl = computed(() => {
@@ -135,7 +139,7 @@ const chatImageCurl = computed(() => {
   -d '{
     "model": "${model}",
     "image_generation": true,
-    "stream": false,
+    "stream": true,
     "messages": [
       {"role": "user", "content": "请画一张雨夜霓虹街头的赛博朋克海报"}
     ]
@@ -168,7 +172,7 @@ const responsesCurl = computed(() => {
     "model": "${model}",
     "input": "请生成一张极简主义太空旅行海报",
     "tools": [{"type": "image_generation"}],
-    "stream": false
+    "stream": true
   }'`
 })
 
@@ -180,6 +184,18 @@ const responsesJSONExample = computed(() => {
   "model": "${selectedChatModel.value || 'gpt-5'}",
   "status": "completed",
   "output": [
+    {
+      "id": "msg_xxx",
+      "type": "message",
+      "role": "assistant",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "先规划镜头和角色动作\\n\\n我会保持透明背景与统一画风。"
+        }
+      ]
+    },
     {
       "id": "igc_xxx",
       "type": "image_generation_call",
@@ -204,6 +220,37 @@ const responsesJSONExample = computed(() => {
     }
   ]
 }`
+})
+
+const chatMixedStreamExample = computed(() => {
+  const model = selectedChatModel.value || 'gpt-5-thinking'
+  return `data: {"id":"chatcmpl_xxx","object":"chat.completion.chunk","model":"${model}","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_xxx","object":"chat.completion.chunk","model":"${model}","choices":[{"index":0,"delta":{"reasoning":"先拆分镜头与角色动作。"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_xxx","object":"chat.completion.chunk","model":"${model}","choices":[{"index":0,"delta":{"content":"我会生成一张透明背景故事图。"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_xxx","object":"chat.completion.chunk","model":"${model}","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"images":[{"url":"${origin.value}/p/img/img_xxx/0?exp=...&sig=...","file_id":"file-xxx","content_type":"image/png","task_id":"img_xxx"}]}
+
+data: [DONE]`
+})
+
+const responsesStreamExample = computed(() => {
+  const model = selectedChatModel.value || 'gpt-5-thinking'
+  return `event: response.created
+data: {"id":"resp_xxx","object":"response","created_at":1710806400,"model":"${model}","status":"in_progress"}
+
+event: response.reasoning.delta
+data: {"type":"response.reasoning.delta","delta":"先拆分镜头与角色动作。"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"我会保持透明背景与统一画风。"}
+
+event: response.image_generation_call.completed
+data: {"type":"response.image_generation_call.completed","status":"completed","result":[{"type":"output_image","url":"${origin.value}/p/img/img_xxx/0?exp=...&sig=...","file_id":"file-xxx","content_type":"image/png","task_id":"img_xxx"}]}
+
+event: response.completed
+data: {"id":"resp_xxx","object":"response","status":"completed","images":[{"url":"${origin.value}/p/img/img_xxx/0?exp=...&sig=...","file_id":"file-xxx","content_type":"image/png","task_id":"img_xxx"}]}`
 })
 
 const imageCurl = computed(() => {
@@ -346,7 +393,7 @@ onMounted(async () => {
               :closable="false"
               show-icon
               title="对话框生图首版说明"
-              description="chat/responses mixed-mode 仅在 image_generation=true 或 tools:[{type:'image_generation'}] 时触发,并且暂不支持 stream=true。成功时请从返回顶层 images 字段读取图片代理链接。"
+              description="chat/responses mixed-mode 仅在 image_generation=true 或 tools:[{type:'image_generation'}] 时触发,现已支持 stream=true。thinking chat chunk 会额外返回 delta.reasoning;/v1/responses 会发出 response.reasoning.delta、response.output_text.delta、response.image_generation_call.completed、response.completed/response.failed。thinking mixed-mode 若整轮没有触发思考,会返回 502 thinking_not_triggered。"
               style="margin-top: 12px"
             />
 
@@ -366,6 +413,14 @@ onMounted(async () => {
               <el-tab-pane label="Responses(JSON 返回)">
                 <pre class="code"><code>{{ responsesJSONExample }}</code></pre>
                 <el-button size="small" @click="copy(responsesJSONExample)">复制 JSON 示例</el-button>
+              </el-tab-pane>
+              <el-tab-pane label="Chat SSE 片段">
+                <pre class="code"><code>{{ chatMixedStreamExample }}</code></pre>
+                <el-button size="small" @click="copy(chatMixedStreamExample)">复制 SSE 示例</el-button>
+              </el-tab-pane>
+              <el-tab-pane label="Responses SSE 事件">
+                <pre class="code"><code>{{ responsesStreamExample }}</code></pre>
+                <el-button size="small" @click="copy(responsesStreamExample)">复制 SSE 事件</el-button>
               </el-tab-pane>
             </el-tabs>
           </template>

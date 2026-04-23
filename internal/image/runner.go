@@ -149,7 +149,7 @@ func (r *Runner) Run(ctx context.Context, opt RunOptions) *RunResult {
 // result 会被就地更新(ConversationID / FileIDs / SignedURLs / AccountID 等)。
 func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult) (bool, string, error) {
 	// 1) 调度账号
-	lease, err := r.sched.Dispatch(ctx, "image")
+	lease, err := r.sched.Dispatch(ctx, scheduler.DispatchOptions{ModelType: "image"})
 	if err != nil {
 		if errors.Is(err, scheduler.ErrNoAvailable) {
 			return false, ErrNoAccount, err

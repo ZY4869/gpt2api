@@ -1,7 +1,7 @@
 {
   "name": "gpt2api-web",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "gpt2api 控制台前端 · Vue 3 + Element Plus",
   "repository": {

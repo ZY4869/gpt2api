@@ -1,7 +1,0 @@
-{
-  "error": {
-    "message": "chat mixed-mode 生图首版暂不支持 stream=true",
-    "type": "invalid_request_error",
-    "code": "image_generation_stream_unsupported"
-  }
-}

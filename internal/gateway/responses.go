@@ -65,17 +65,15 @@ func (h *Handler) Responses(c *gin.Context) {
 			"/v1/responses 首版仅支持 image_generation=true 或 tools:[{type:\"image_generation\"}]")
 		return
 	}
-	if req.Stream {
-		rec.ErrorCode = "image_generation_stream_unsupported"
-		openAIError(c, http.StatusBadRequest, "image_generation_stream_unsupported",
-			"responses mixed-mode 生图首版暂不支持 stream=true")
-		return
-	}
 
 	messages, err := responseInputToMessages(req.Input, req.Instructions)
 	if err != nil {
 		rec.ErrorCode = "invalid_request_error"
 		openAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if req.Stream {
+		h.streamMixedModeResponses(c, rec, ak, &req, messages)
 		return
 	}
 
@@ -91,48 +89,8 @@ func (h *Handler) Responses(c *gin.Context) {
 		return
 	}
 
-	output := make([]ResponseOutputImage, 0, len(res.Images))
-	for _, img := range res.Images {
-		output = append(output, ResponseOutputImage{
-			Type:        "output_image",
-			URL:         img.URL,
-			FileID:      img.FileID,
-			ContentType: img.ContentType,
-			TaskID:      img.TaskID,
-			IsPreview:   img.IsPreview,
-		})
-	}
-
 	responseID := "resp_" + newUUIDFunc()
-	outputItems := make([]ResponseOutputItem, 0, 2)
-	if text := res.responseText(); text != "" {
-		outputItems = append(outputItems, ResponseOutputItem{
-			ID:     "msg_" + newUUIDFunc(),
-			Type:   "message",
-			Role:   "assistant",
-			Status: "completed",
-			Content: []ResponseOutputContent{{
-				Type: "output_text",
-				Text: text,
-			}},
-		})
-	}
-	outputItems = append(outputItems, ResponseOutputItem{
-		ID:     "igc_" + newUUIDFunc(),
-		Type:   "image_generation_call",
-		Status: "completed",
-		Result: output,
-	})
-
-	c.JSON(http.StatusOK, ResponseObject{
-		ID:        responseID,
-		Object:    "response",
-		CreatedAt: nowFunc().Unix(),
-		Model:     req.Model,
-		Status:    "completed",
-		Output:    outputItems,
-		Images:    res.Images,
-	})
+	c.JSON(http.StatusOK, buildMixedModeResponseObject(responseID, req.Model, res))
 }
 
 func hasImageGenerationTool(tools []ResponseToolDef) bool {

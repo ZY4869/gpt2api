@@ -1,0 +1,9 @@
+data: {"id":"chatcmpl-mixed-chat-stream","object":"chat.completion.chunk","created":1710806400,"model":"gpt-5-thinking","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-mixed-chat-stream","object":"chat.completion.chunk","created":1710806400,"model":"gpt-5-thinking","choices":[{"index":0,"delta":{"reasoning":"先规划角色动作。"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-mixed-chat-stream","object":"chat.completion.chunk","created":1710806400,"model":"gpt-5-thinking","choices":[{"index":0,"delta":{"content":"我会生成一张透明背景故事图。"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-mixed-chat-stream","object":"chat.completion.chunk","created":1710806400,"model":"gpt-5-thinking","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"images":[{"url":"/p/img/task_stream_chat/0?exp=1710892800000\u0026sig=chatstream","file_id":"file_stream_chat","content_type":"image/png","task_id":"task_stream_chat"}]}
+
+data: [DONE]

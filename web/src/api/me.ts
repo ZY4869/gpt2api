@@ -163,11 +163,13 @@ export function getMyImageTask(taskID: string): Promise<ImageTask> {
 export interface ChatStreamDelta {
   role?: string
   content?: string
+  reasoning?: string
 }
 
 export interface ChatStreamChunk {
   id?: string
   model?: string
+  images?: PlayMixedImage[]
   choices?: Array<{
     index?: number
     delta?: ChatStreamDelta
@@ -193,6 +195,7 @@ export interface PlayChatResponse {
   model?: string
   choices?: Array<{
     index?: number
+    reasoning?: string
     message?: {
       role?: string
       content?: string
@@ -202,17 +205,59 @@ export interface PlayChatResponse {
   images?: PlayMixedImage[]
 }
 
+export interface PlayChatStreamHandlers {
+  onContentDelta?: (text: string) => void
+  onReasoningDelta?: (text: string) => void
+  onImages?: (images: PlayMixedImage[]) => void
+}
+
+export interface PlayChatStreamResult {
+  content: string
+  reasoning: string
+  images: PlayMixedImage[]
+}
+
+function parseSSEBlock(block: string): { event: string; data: string } {
+  let event = ''
+  const dataLines: string[] = []
+  for (const rawLine of block.split(/\r?\n/)) {
+    const line = rawLine.trimEnd()
+    if (!line) continue
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim()
+      continue
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart())
+    }
+  }
+  return {
+    event,
+    data: dataLines.join('\n').trim(),
+  }
+}
+
+function normalizeMixedImages(value: unknown): PlayMixedImage[] {
+  return Array.isArray(value) ? (value as PlayMixedImage[]) : []
+}
+
+function extractStreamError(payload: any, fallback: string): Error {
+  const detail = payload?.error?.message || payload?.message || fallback
+  return new Error(detail)
+}
+
 // streamPlayChat 直接用 fetch 读 SSE,因为 axios 不擅长流式。
-// 回调 onDelta 每接到一段 content 增量触发;流结束时 promise resolve。
+// 支持普通 chat chunk、mixed-mode 最终 images,以及 event:error/response.failed。
 export async function streamPlayChat(
   req: {
     model: string
     messages: PlayChatMessage[]
     temperature?: number
+    image_generation?: boolean
   },
-  onDelta: (text: string) => void,
+  handlers: PlayChatStreamHandlers = {},
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<PlayChatStreamResult> {
   const token = localStorage.getItem('gpt2api.access') || ''
   const resp = await fetch('/api/me/playground/chat', {
     method: 'POST',
@@ -224,34 +269,93 @@ export async function streamPlayChat(
     signal,
   })
   if (!resp.ok || !resp.body) {
-    const text = await resp.text().catch(() => '')
-    throw new Error(`chat ${resp.status}: ${text || resp.statusText}`)
+    let detail = ''
+    try {
+      const contentType = resp.headers.get('content-type') || ''
+      if (contentType.includes('application/json')) {
+        const body = await resp.json()
+        detail = body?.error?.message || body?.message || ''
+      } else {
+        detail = await resp.text()
+      }
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail || `chat ${resp.status}: ${resp.statusText}`)
   }
   const reader = resp.body.getReader()
   const decoder = new TextDecoder('utf-8')
   let buffer = ''
+  const result: PlayChatStreamResult = {
+    content: '',
+    reasoning: '',
+    images: [],
+  }
+
+  const pushContent = (text: string) => {
+    if (!text) return
+    result.content += text
+    handlers.onContentDelta?.(text)
+  }
+  const pushReasoning = (text: string) => {
+    if (!text) return
+    result.reasoning += text
+    handlers.onReasoningDelta?.(text)
+  }
+  const setImages = (images: PlayMixedImage[]) => {
+    if (!images.length) return
+    result.images = images
+    handlers.onImages?.(images)
+  }
+
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
-    // SSE 按 "\n\n" 分块,每块内的 "data:" 是 JSON 或 "[DONE]"
-    const blocks = buffer.split('\n\n')
+    const blocks = buffer.split(/\r?\n\r?\n/)
     buffer = blocks.pop() || ''
     for (const block of blocks) {
-      for (const line of block.split('\n')) {
-        if (!line.startsWith('data:')) continue
-        const data = line.slice(5).trim()
-        if (!data || data === '[DONE]') continue
-        try {
-          const chunk: ChatStreamChunk = JSON.parse(data)
-          const delta = chunk.choices?.[0]?.delta?.content
-          if (delta) onDelta(delta)
-        } catch {
-          // 忽略解析失败的心跳
-        }
+      const { event, data } = parseSSEBlock(block)
+      if (!data || data === '[DONE]') continue
+
+      let payload: any
+      try {
+        payload = JSON.parse(data)
+      } catch {
+        continue
+      }
+
+      if (event === 'error' || event === 'response.failed') {
+        throw extractStreamError(payload, '流式请求失败')
+      }
+
+      if (event === 'response.reasoning.delta') {
+        pushReasoning(payload?.delta || '')
+        continue
+      }
+      if (event === 'response.output_text.delta') {
+        pushContent(payload?.delta || '')
+        continue
+      }
+      if (event === 'response.image_generation_call.completed') {
+        setImages(normalizeMixedImages(payload?.result))
+        continue
+      }
+      if (event === 'response.completed') {
+        setImages(normalizeMixedImages(payload?.images))
+        continue
+      }
+
+      const chunk = payload as ChatStreamChunk
+      pushReasoning(chunk.choices?.[0]?.delta?.reasoning || '')
+      pushContent(chunk.choices?.[0]?.delta?.content || '')
+      setImages(normalizeMixedImages(chunk.images))
+      if (payload?.error) {
+        throw extractStreamError(payload, '流式请求失败')
       }
     }
   }
+  return result
 }
 
 export async function playCreateChat(

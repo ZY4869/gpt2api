@@ -13,6 +13,12 @@ var ErrNotFound = errors.New("账号不存在")
 
 type DAO struct{ db *sqlx.DB }
 
+type DispatchableFilter struct {
+	Limit             int
+	RequirePaid       bool
+	ExcludeAccountIDs []uint64
+}
+
 func NewDAO(db *sqlx.DB) *DAO { return &DAO{db: db} }
 
 // DB 暴露底层 handle 给刷新器 / 探测器用于直接原子更新(少量场景)。
@@ -106,16 +112,35 @@ func (d *DAO) List(ctx context.Context, status string, keyword string, offset, l
 }
 
 // ListDispatchable 调度器专用:返回 status=healthy 且 cooldown 到期、AT 未过期的候选。
-func (d *DAO) ListDispatchable(ctx context.Context, limit int) ([]*Account, error) {
-	rows := make([]*Account, 0, limit)
+func (d *DAO) ListDispatchable(ctx context.Context, filter DispatchableFilter) ([]*Account, error) {
+	if filter.Limit <= 0 {
+		filter.Limit = 30
+	}
+	rows := make([]*Account, 0, filter.Limit)
 	now := time.Now()
-	err := d.db.SelectContext(ctx, &rows,
-		`SELECT * FROM oai_accounts
+	query := `SELECT * FROM oai_accounts
          WHERE deleted_at IS NULL AND status = 'healthy'
            AND (cooldown_until IS NULL OR cooldown_until <= ?)
            AND (token_expires_at IS NULL OR token_expires_at > ?)
-         ORDER BY CASE WHEN last_used_at IS NULL THEN 0 ELSE 1 END, last_used_at ASC
-         LIMIT ?`, now, now, limit)
+`
+	args := []interface{}{now, now}
+	if filter.RequirePaid {
+		query += ` AND LOWER(TRIM(account_type)) <> 'free'
+           AND LOWER(TRIM(plan_type)) <> 'free'
+`
+	}
+	if len(filter.ExcludeAccountIDs) > 0 {
+		query += ` AND id NOT IN (?)`
+		args = append(args, filter.ExcludeAccountIDs)
+	}
+	query += ` ORDER BY CASE WHEN last_used_at IS NULL THEN 0 ELSE 1 END, last_used_at ASC
+         LIMIT ?`
+	args = append(args, filter.Limit)
+	query, args, err := sqlx.In(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	err = d.db.SelectContext(ctx, &rows, d.db.Rebind(query), args...)
 	fillAll(rows)
 	return rows, err
 }
@@ -342,6 +367,13 @@ func (d *DAO) ApplyQuotaResult(ctx context.Context, id uint64, remaining, total 
 		reset = nil
 	}
 	_, err := d.db.ExecContext(ctx, q, remaining, remaining, total, total, reset, time.Now(), id)
+	return err
+}
+
+func (d *DAO) UpdatePlanType(ctx context.Context, id uint64, planType string) error {
+	_, err := d.db.ExecContext(ctx,
+		`UPDATE oai_accounts SET plan_type = ? WHERE id = ? AND deleted_at IS NULL`,
+		planType, id)
 	return err
 }
 
