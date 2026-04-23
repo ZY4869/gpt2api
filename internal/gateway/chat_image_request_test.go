@@ -94,3 +94,19 @@ func TestPrepareMixedModeRequestRejectsCountsOutsideAllowedRange(t *testing.T) {
 		}
 	})
 }
+
+func TestPrepareMixedModeRequestVersionedThinkingModelGetsDefaultEffort(t *testing.T) {
+	req, apiErr := prepareMixedModeRequest(
+		&modelpkg.Model{Slug: "gpt-5-4-thinking", UpstreamModelSlug: "gpt-5-4-thinking", Type: modelpkg.TypeChat, Enabled: true},
+		mixedModeRequestInput{
+			Messages: []chatgpt.ChatMessage{{Role: "user", Content: "生成2张连续故事图"}},
+		},
+		10,
+	)
+	if apiErr != nil {
+		t.Fatalf("apiErr = %+v", apiErr)
+	}
+	if req.ThinkingEffort != "standard" {
+		t.Fatalf("thinking_effort = %q, want standard", req.ThinkingEffort)
+	}
+}

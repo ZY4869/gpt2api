@@ -161,7 +161,7 @@ func TestAcquireChatRequirementsReturnsUnavailableWhenPaidCandidatesExhausted(t 
 	}
 
 	lease, cli, cr, excluded, err := h.acquireChatRequirements(context.Background(), "req-empty", &modelpkg.Model{
-		Slug: "gpt-5-thinking",
+		Slug: "gpt-5-4-thinking",
 		Type: modelpkg.TypeChat,
 	})
 	if !errors.Is(err, scheduler.ErrNoAvailable) {

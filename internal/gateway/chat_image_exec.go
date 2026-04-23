@@ -56,7 +56,7 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 		return nil, &mixedModeAPIError{
 			Status:  http.StatusBadRequest,
 			Code:    "model_not_found",
-			Message: fmt.Sprintf("模型 %q 不存在或已下架", requestedModel),
+			Message: modelNotFoundMessage(requestedModel),
 		}
 	}
 	if chatModel.Type != modelpkg.TypeChat {
@@ -155,6 +155,8 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 	logger.L().Info("chat mixed image start",
 		zap.String("request_id", rec.RequestID),
 		zap.String("chat_model", requestedModel),
+		zap.String("requested_model_slug", requestedModel),
+		zap.String("resolved_upstream_model_slug", resolveRequestedUpstreamModel(chatModel)),
 		zap.String("task_id", taskID),
 		zap.Int("requested_n", mixedReq.RequestedN),
 		zap.Int("actual_n", 0),
@@ -162,6 +164,7 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 		zap.String("strategy", strategy),
 		zap.String("conversation_id", ""),
 		zap.Bool("partial_success", false),
+		zap.Bool("thinking_model", isThinkingModel(chatModel)),
 		zap.Bool("require_paid", isThinkingModel(chatModel)),
 	)
 
@@ -212,6 +215,7 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 	logger.L().Info("chat mixed image success",
 		zap.String("request_id", rec.RequestID),
 		zap.String("task_id", taskID),
+		zap.String("requested_model_slug", requestedModel),
 		zap.Uint64("account_id", res.AccountID),
 		zap.String("conversation_id", res.ConversationID),
 		zap.Int("requested_n", mixedReq.RequestedN),
@@ -221,6 +225,7 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 		zap.String("strategy", strategy),
 		zap.Bool("partial_success", partialSuccess),
 		zap.Bool("is_preview", res.IsPreview),
+		zap.Bool("thinking_model", isThinkingModel(chatModel)),
 		zap.Bool("thinking_triggered", strings.TrimSpace(res.ReasoningText) != ""),
 		zap.Int("reasoning_len", len(strings.TrimSpace(res.ReasoningText))),
 	)
@@ -283,19 +288,12 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 		return nil, apiErr
 	}
 
-	upstreamModel := chatModel.UpstreamModelSlug
-	if upstreamModel == "" {
-		if isThinkingModel(chatModel) {
-			upstreamModel = "gpt-5-4-thinking"
-		} else {
-			upstreamModel = "auto"
-		}
-	}
-	upstreamModel = mapUpstreamModelSlug(upstreamModel)
+	upstreamModel := resolveRequestedUpstreamModel(chatModel)
 	if cr.IsFreeAccount() && upstreamModel != "auto" && !isThinkingModel(chatModel) {
 		logger.L().Warn("chat mixed image downgrade free account to auto",
 			zap.Uint64("account_id", lease.Account.ID),
-			zap.String("requested_model", upstreamModel))
+			zap.String("requested_model_slug", chatModel.Slug),
+			zap.String("resolved_upstream_model_slug", upstreamModel))
 		upstreamModel = "auto"
 	}
 
@@ -370,11 +368,14 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 	logger.L().Info("chat mixed image SSE parsed",
 		zap.String("task_id", taskID),
 		zap.Uint64("account_id", lease.Account.ID),
+		zap.String("requested_model_slug", chatModel.Slug),
+		zap.String("resolved_upstream_model_slug", upstreamModel),
 		zap.String("conversation_id", finalState.ConversationID),
 		zap.String("strategy", strategy),
 		zap.Int("requested_n", req.RequestedN),
 		zap.Int("sse_files", len(finalState.FileIDs)),
 		zap.Int("sse_sediments", len(finalState.SedimentIDs)),
+		zap.Bool("thinking_model", isThinkingModel(chatModel)),
 		zap.Bool("thinking_triggered", strings.TrimSpace(finalState.ReasoningText) != ""),
 		zap.Int("reasoning_len", len(strings.TrimSpace(finalState.ReasoningText))),
 		zap.Int("excluded_account_ids_count", len(excluded)),

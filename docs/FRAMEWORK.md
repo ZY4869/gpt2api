@@ -237,6 +237,7 @@ DispatchAccount(modelType) -> (Account, Unlock, err)
 - `POST /v1/chat/completions` 识别 `stream=true` 时,开 `http.Flusher` 边接收上游 SSE 边转发
 - 上游 `conduit_token` / `chat_token` / `proof_token` 在网关层透明处理
 - SSE 结束时统计 `input_tokens` / `output_tokens`,立即结算
+- 如需稳定命中思考链路,调用方必须显式传 thinking 模型名,推荐稳定别名 `gpt-5-thinking`
 - mixed-mode 生图首版额外支持:
   - `POST /v1/chat/completions` + `image_generation=true`
   - `POST /v1/responses` + `image_generation=true` 或 `tools:[{type:"image_generation"}]`

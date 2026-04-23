@@ -446,7 +446,7 @@ func TestMixedModePassesNAndThinkingEffortToExecutor(t *testing.T) {
 				return &mixedModeExecResult{Images: []MixedModeImage{{TaskID: "task_resp", FileID: "file_resp", URL: "/p/img/task_resp/0", ContentType: "image/png"}}}, nil
 			},
 		}
-		c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-thinking","input":"生成3张连续故事图","tools":[{"type":"image_generation"}],"n":3,"thinking_effort":"high","stream":false}`, ak)
+		c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-4-thinking","input":"生成3张连续故事图","tools":[{"type":"image_generation"}],"n":3,"thinking_effort":"high","stream":false}`, ak)
 		h.Responses(c)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", w.Code)

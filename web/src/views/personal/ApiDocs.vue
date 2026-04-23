@@ -12,16 +12,24 @@ import {
   type MyStatsResp,
 } from '@/api/me'
 import { formatCredit, formatDateTime, formatErrorCode } from '@/utils/format'
+import { pickDefaultChatModel, preferredThinkingModelSlug, sortChatModelsForDisplay } from '@/utils/models'
 import { ENABLE_CHAT_IMAGE_MIXED, ENABLE_CHAT_MODEL } from '@/config/feature'
 
 const activeTab = ref<'chat' | 'image'>(ENABLE_CHAT_MODEL ? 'chat' : 'image')
 
 const models = ref<SimpleModel[]>([])
-const chatModels = computed(() => models.value.filter((m) => m.type === 'chat'))
+const chatModels = computed(() => sortChatModelsForDisplay(models.value.filter((m) => m.type === 'chat')))
 const imageModels = computed(() => models.value.filter((m) => m.type === 'image'))
 
 const selectedChatModel = ref<string>('')
 const selectedImageModel = ref<string>('')
+const selectedChatMeta = computed(
+  () => chatModels.value.find((m) => m.slug === selectedChatModel.value) || null,
+)
+const preferredThinkingSlug = computed(() => preferredThinkingModelSlug(chatModels.value))
+const thinkingExampleModel = computed(
+  () => (selectedChatMeta.value?.is_thinking ? selectedChatModel.value : preferredThinkingSlug.value) || 'gpt-5-thinking',
+)
 
 // 原点:浏览器当前地址,用于 SDK 示例的 base_url
 const origin = computed(() => window.location.origin)
@@ -132,7 +140,7 @@ for chunk in resp:
 })
 
 const chatImageCurl = computed(() => {
-  const model = selectedChatModel.value || 'gpt-5'
+  const model = thinkingExampleModel.value
   return `curl ${origin.value}/v1/chat/completions \\
   -H "Authorization: Bearer \${YOUR_API_KEY}" \\
   -H "Content-Type: application/json" \\
@@ -147,7 +155,7 @@ const chatImageCurl = computed(() => {
 })
 
 const chatImagePython = computed(() => {
-  const model = selectedChatModel.value || 'gpt-5'
+  const model = thinkingExampleModel.value
   return `from openai import OpenAI
 
 client = OpenAI(
@@ -164,7 +172,7 @@ print(resp.model_extra["images"][0]["url"])`
 })
 
 const responsesCurl = computed(() => {
-  const model = selectedChatModel.value || 'gpt-5'
+  const model = thinkingExampleModel.value
   return `curl ${origin.value}/v1/responses \\
   -H "Authorization: Bearer \${YOUR_API_KEY}" \\
   -H "Content-Type: application/json" \\
@@ -181,7 +189,7 @@ const responsesJSONExample = computed(() => {
   "id": "resp_xxx",
   "object": "response",
   "created_at": 1710806400,
-  "model": "${selectedChatModel.value || 'gpt-5'}",
+  "model": "${thinkingExampleModel.value}",
   "status": "completed",
   "output": [
     {
@@ -223,7 +231,7 @@ const responsesJSONExample = computed(() => {
 })
 
 const chatMixedStreamExample = computed(() => {
-  const model = selectedChatModel.value || 'gpt-5-thinking'
+  const model = thinkingExampleModel.value
   return `data: {"id":"chatcmpl_xxx","object":"chat.completion.chunk","model":"${model}","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
 
 data: {"id":"chatcmpl_xxx","object":"chat.completion.chunk","model":"${model}","choices":[{"index":0,"delta":{"reasoning":"先拆分镜头与角色动作。"},"finish_reason":null}]}
@@ -236,7 +244,7 @@ data: [DONE]`
 })
 
 const responsesStreamExample = computed(() => {
-  const model = selectedChatModel.value || 'gpt-5-thinking'
+  const model = thinkingExampleModel.value
   return `event: response.created
 data: {"id":"resp_xxx","object":"response","created_at":1710806400,"model":"${model}","status":"in_progress"}
 
@@ -308,9 +316,9 @@ onMounted(async () => {
     models.value = ENABLE_CHAT_MODEL
       ? m.items
       : m.items.filter((x) => x.type !== 'chat')
-    const firstChat = m.items.find((x) => x.type === 'chat')
+    const firstChat = pickDefaultChatModel(m.items.filter((x) => x.type === 'chat'))
     const firstImage = m.items.find((x) => x.type === 'image')
-    if (firstChat) selectedChatModel.value = firstChat.slug
+    if (firstChat) selectedChatModel.value = firstChat
     if (firstImage) selectedImageModel.value = firstImage.slug
   } catch {
     // 忽略
@@ -367,13 +375,16 @@ onMounted(async () => {
               <el-option
                 v-for="m in chatModels"
                 :key="m.id"
-                :label="`${m.slug}${m.description ? ' · ' + m.description : ''}`"
+                :label="`${m.slug}${m.is_thinking ? ' · Thinking' : ''}${m.description ? ' · ' + m.description : ''}`"
                 :value="m.slug"
               />
             </el-select>
             <router-link to="/personal/keys">
               <el-button text type="primary">没有 Key?去「API Keys」创建</el-button>
             </router-link>
+          </div>
+          <div class="mute" style="margin-top: 8px">
+            如需稳定触发思考与 `delta.reasoning` / `response.reasoning.delta`,请优先选择 {{ preferredThinkingSlug || 'gpt-5-thinking' }}。
           </div>
 
           <el-tabs type="border-card" class="code-tabs">

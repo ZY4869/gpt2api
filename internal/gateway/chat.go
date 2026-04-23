@@ -181,7 +181,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	if err != nil || !m.Enabled {
 		fail("model_not_found")
 		openAIError(c, http.StatusBadRequest, "model_not_found",
-			fmt.Sprintf("模型 %q 不存在或已下架", req.Model))
+			modelNotFoundMessage(req.Model))
 		return
 	}
 	// Chat 入口收到图像模型时,转派给图像分支(便于客户端只用 /v1/chat/completions)。
@@ -263,7 +263,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		_ = h.Billing.Refund(context.Background(), ak.UserID, ak.ID, estCost, refID, "chat refund")
 	}
 
-	thinkingModel := thinkingDispatchRequired(m)
+	thinkingModel := isThinkingModel(m)
 
 	// 4) 调度账号 + 初始化上游会话(requirePaid 的 thinking 请求会在调度和运行期都跳过 free 账号)
 	lease, cli, cr, excluded, err := h.acquireChatRequirements(c.Request.Context(), rec.RequestID, m)
@@ -286,17 +286,17 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	rec.AccountID = lease.Account.ID
 	defer func() { _ = lease.Release(context.Background()) }()
 
+	upstreamModel := resolveRequestedUpstreamModel(m)
 	logger.L().Info("chat upstream session ready",
 		zap.String("request_id", rec.RequestID),
 		zap.Uint64("account_id", lease.Account.ID),
 		zap.Bool("require_paid", thinkingModel),
+		zap.Bool("thinking_model", thinkingModel),
+		zap.String("requested_model_slug", req.Model),
+		zap.String("resolved_upstream_model_slug", upstreamModel),
 		zap.String("persona", cr.Persona),
 		zap.Int("excluded_account_ids_count", len(excluded)))
 
-	upstreamModel := m.UpstreamModelSlug
-	if upstreamModel == "" {
-		upstreamModel = "auto"
-	}
 	// Model slug 兜底映射:chatgpt.com 后端识别的是"灰度构建版本号",不是
 	// 通用品牌名。HAR 抓包(2026-04 paid 账号)显示浏览器实际发送的 slug:
 	//   品牌名 "GPT-5"   →  真实 slug "gpt-5-3"
@@ -306,8 +306,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// rejection)。这里做一次自动改写,避免运维每次灰度版本号变动都要改表。
 	// 管理员若在 models.upstream_model_slug 直接填了带版本号的 slug(如
 	// "gpt-5-3"),本映射是 no-op。
-	upstreamModel = mapUpstreamModelSlug(upstreamModel)
-
 	// POW(异步,5s 超时)
 	var proofToken string
 	if cr.Proofofwork.Required {
@@ -346,7 +344,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	if cr.IsFreeAccount() && upstreamModel != "auto" && !thinkingModel {
 		logger.L().Warn("free account requesting premium model, downgrade to auto",
 			zap.Uint64("account_id", lease.Account.ID),
-			zap.String("requested_model", upstreamModel))
+			zap.String("requested_model_slug", req.Model),
+			zap.String("resolved_upstream_model_slug", upstreamModel))
 		upstreamModel = "auto"
 	}
 
@@ -372,7 +371,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 
 	logger.L().Info("chat f/conversation send",
 		zap.Uint64("account_id", lease.Account.ID),
+		zap.String("requested_model_slug", req.Model),
 		zap.String("upstream_model", upstreamModel),
+		zap.Bool("thinking_model", thinkingModel),
 		zap.Int("chat_token_len", len(cr.Token)),
 		zap.Int("proof_token_len", len(proofToken)),
 		zap.Int("conduit_len", len(conduit)),

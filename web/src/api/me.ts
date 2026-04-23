@@ -7,6 +7,7 @@ export interface SimpleModel {
   slug: string
   type: 'chat' | 'image' | string
   description: string
+  is_thinking: boolean
 }
 
 export function listMyModels(): Promise<{ items: SimpleModel[]; total: number }> {

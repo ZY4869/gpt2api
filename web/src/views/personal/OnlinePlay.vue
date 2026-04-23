@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useUserStore } from '@/stores/user'
 import { formatCredit } from '@/utils/format'
+import { pickDefaultChatModel, preferredThinkingModelSlug, sortChatModelsForDisplay } from '@/utils/models'
 import {
   listMyModels,
   streamPlayChat,
@@ -24,15 +25,18 @@ const { user } = storeToRefs(userStore)
 const balance = computed(() => formatCredit(user.value?.credit_balance))
 
 const models = ref<SimpleModel[]>([])
-const chatModels = computed(() => models.value.filter((m) => m.type === 'chat'))
+const chatModels = computed(() => sortChatModelsForDisplay(models.value.filter((m) => m.type === 'chat')))
 const imageModels = computed(() => models.value.filter((m) => m.type === 'image'))
 
 const selectedChatModel = ref('')
 const selectedImageModel = ref('')
 
-const currentChatDesc = computed(
-  () => chatModels.value.find((m) => m.slug === selectedChatModel.value)?.description || '',
+const selectedChatMeta = computed(
+  () => chatModels.value.find((m) => m.slug === selectedChatModel.value) || null,
 )
+const preferredThinkingSlug = computed(() => preferredThinkingModelSlug(chatModels.value))
+const selectedChatIsThinking = computed(() => !!selectedChatMeta.value?.is_thinking)
+const currentChatDesc = computed(() => selectedChatMeta.value?.description || '')
 const currentImageDesc = computed(
   () => imageModels.value.find((m) => m.slug === selectedImageModel.value)?.description || '',
 )
@@ -51,9 +55,9 @@ onMounted(async () => {
     models.value = ENABLE_CHAT_MODEL
       ? m.items
       : m.items.filter((x) => x.type !== 'chat')
-    const firstChat = m.items.find((x) => x.type === 'chat')
+    const firstChat = pickDefaultChatModel(m.items.filter((x) => x.type === 'chat'))
     const firstImage = m.items.find((x) => x.type === 'image')
-    if (firstChat) selectedChatModel.value = firstChat.slug
+    if (firstChat) selectedChatModel.value = firstChat
     if (firstImage) selectedImageModel.value = firstImage.slug
   } catch {
     // 静默;错误拦截器已提示
@@ -537,7 +541,10 @@ watch(activeTab, (v) => {
                 <el-option v-for="m in chatModels" :key="m.id" :label="m.slug" :value="m.slug">
                   <div class="opt-row">
                     <span class="opt-slug">{{ m.slug }}</span>
-                    <el-tag size="small" type="primary" effect="plain">chat</el-tag>
+                    <div class="opt-tags">
+                      <el-tag v-if="m.is_thinking" size="small" type="success" effect="plain">thinking</el-tag>
+                      <el-tag v-else size="small" type="primary" effect="plain">chat</el-tag>
+                    </div>
                   </div>
                 </el-option>
               </el-select>
@@ -553,6 +560,9 @@ watch(activeTab, (v) => {
                 inactive-text="关"
               />
               <div class="side-hint">开启后会在同一轮 chat 请求里触发生图,思考过程会实时显示,图片会在流末尾返回。</div>
+              <div v-if="chatImageMode && !selectedChatIsThinking" class="side-hint side-warn">
+                当前选择的是非 thinking 模型,本次 mixed-mode 仍可生图,但不会强制触发思考过程。若要稳定展示思考,请改用 {{ preferredThinkingSlug || 'gpt-5-thinking' }}。
+              </div>
             </div>
 
             <div class="side-row">
@@ -590,7 +600,11 @@ watch(activeTab, (v) => {
                 <div>
                   <div class="chat-model">{{ selectedChatModel || '未选择模型' }}</div>
                   <div class="chat-sub">
-                    {{ chatSending ? (chatImageMode ? '正在思考并生成图片…' : '正在思考并回复…') : (chatMsgs.length ? `${chatMsgs.length} 条消息 · ${chatImageMode ? '生图模式' : '文本模式'}` : '准备就绪') }}
+                    {{ chatSending
+                      ? (chatImageMode
+                        ? (selectedChatIsThinking ? '正在思考并生成图片…' : '正在生成图片…')
+                        : (selectedChatIsThinking ? '正在思考并回复…' : '正在回复…'))
+                      : (chatMsgs.length ? `${chatMsgs.length} 条消息 · ${chatImageMode ? '生图模式' : '文本模式'}` : '准备就绪') }}
                   </div>
                 </div>
               </div>
@@ -707,7 +721,11 @@ watch(activeTab, (v) => {
               <div class="composer-tools">
                 <span class="hint">
                   <el-icon><InfoFilled /></el-icon>
-                  {{ chatImageMode ? '当前为生图模式,会实时展示思考过程并在结束后返回图片' : '按 Enter 发送' }}
+                  {{ chatImageMode
+                    ? (selectedChatIsThinking
+                      ? '当前为 thinking 生图模式,会实时展示思考过程并在结束后返回图片'
+                      : '当前模型不是 thinking 模型,本次会生图,但不保证展示思考过程')
+                    : '按 Enter 发送' }}
                 </span>
                 <div style="flex:1" />
                 <el-button v-if="chatSending" type="danger" @click="stopChat" round>
@@ -1114,9 +1132,11 @@ watch(activeTab, (v) => {
 }
 .side-val { font-weight: 600; color: var(--el-color-primary); letter-spacing: 0; text-transform: none; font-size: 13px; }
 .side-hint { font-size: 12px; color: var(--el-text-color-placeholder); line-height: 1.5; }
+.side-warn { color: var(--el-color-warning-dark-2); }
 .side-btn { margin-top: 4px; }
 .gen-btn { box-shadow: 0 6px 18px -6px rgba(64, 158, 255, 0.55); }
 .opt-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.opt-tags { display: inline-flex; align-items: center; gap: 6px; }
 .opt-slug { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
 
 /* ====================== Chat ====================== */

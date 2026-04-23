@@ -43,7 +43,7 @@ const USER_EMAIL  = args['user-email']  || `user+${Date.now()}@smoke.test`
 const USER_PASS   = args['user-pass']   || 'User123456'
 const KEEP_USER   = args['keep'] === 'true'
 const ENABLE_MIXED = (args['mixed-mode'] || env.GPT2API_SMOKE_MIXED || 'false') === 'true'
-const MIXED_MODEL = args['mixed-model'] || env.GPT2API_MIXED_MODEL || 'gpt-5'
+const MIXED_MODEL = args['mixed-model'] || env.GPT2API_MIXED_MODEL || 'gpt-5-thinking'
 const MIXED_PROMPT = args['mixed-prompt'] || env.GPT2API_MIXED_PROMPT || '请画一张极简主义太空旅行海报'
 
 let pass = 0
@@ -477,8 +477,8 @@ async function checkMixedMode() {
       } else {
         bad('chat mixed-mode stream=true 校验失败', `late-error code=${code} msg=${sseMsg(body)}`)
       }
-    } else if (body.includes('data: [DONE]') && body.includes('"images"')) {
-      ok('chat mixed-mode stream=true 返回 SSE,并在最终 chunk 附带 images')
+    } else if (body.includes('data: [DONE]') && body.includes('"images"') && body.includes('"reasoning"')) {
+      ok('chat mixed-mode stream=true 返回 SSE reasoning,并在最终 chunk 附带 images')
     } else {
       bad('chat mixed-mode stream=true 校验失败', `body=${body.slice(0, 500)}`)
     }
@@ -529,8 +529,8 @@ async function checkMixedMode() {
       } else {
         bad('responses mixed-mode stream=true 校验失败', `late-error code=${code} msg=${sseMsg(body)}`)
       }
-    } else if (hasOrderedResponsesStreamEvents(body) && body.includes('"type":"output_image"')) {
-      ok('responses mixed-mode stream=true 返回命名 SSE,并按 created -> delta -> image_generation_call.completed -> completed 顺序结束')
+    } else if (hasOrderedResponsesStreamEvents(body) && body.includes('event: response.reasoning.delta') && body.includes('"type":"output_image"')) {
+      ok('responses mixed-mode stream=true 返回 reasoning 事件,并按 created -> delta -> image_generation_call.completed -> completed 顺序结束')
     } else {
       bad('responses mixed-mode stream=true 校验失败', `events=${listSSEEventNames(body).join(' > ')} body=${body.slice(0, 600)}`)
     }

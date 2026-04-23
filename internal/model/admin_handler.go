@@ -234,18 +234,7 @@ func (h *AdminHandler) ListEnabledForMe(c *gin.Context) {
 		resp.Internal(c, err.Error())
 		return
 	}
-	type simple struct {
-		ID          uint64 `json:"id"`
-		Slug        string `json:"slug"`
-		Type        string `json:"type"`
-		Description string `json:"description"`
-	}
-	out := make([]simple, 0, len(rows))
-	for _, m := range rows {
-		out = append(out, simple{
-			ID: m.ID, Slug: m.Slug, Type: m.Type, Description: m.Description,
-		})
-	}
+	out := BuildPublicModels(rows)
 	resp.OK(c, gin.H{"items": out, "total": len(out)})
 }
 

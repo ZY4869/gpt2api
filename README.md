@@ -453,6 +453,7 @@ event: response.completed
 协议与约束:
 
 - mixed-mode 只在 `image_generation=true` 或 `tools:[{type:"image_generation"}]` 时触发
+- 如需稳定触发思考,请显式使用 thinking 模型名;推荐 `gpt-5-thinking` 这个稳定别名(当前映射到 `gpt-5-4-thinking`)
 - `chat/completions stream=true` 已支持实时 `delta.reasoning` 与 `delta.content`; mixed-mode 结束 chunk 会在顶层附带 `images`,晚到失败会发送 `event: error`
 - `/v1/responses stream=true` 会发送 `response.created`、`response.reasoning.delta`、`response.output_text.delta`、`response.image_generation_call.completed`、`response.completed`、`response.failed`
 - thinking 普通对话非流式会返回 `choices[0].reasoning`; mixed-mode 成功时也会把 reasoning 聚合到文本返回里,便于前端展示

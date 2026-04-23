@@ -13,16 +13,16 @@ import (
 const defaultMixedModeMaxN = 10
 
 type mixedModeRequestInput struct {
-	Messages        []chatgpt.ChatMessage
-	RequestedN      *int
-	ThinkingEffort  string
+	Messages       []chatgpt.ChatMessage
+	RequestedN     *int
+	ThinkingEffort string
 }
 
 type mixedModePreparedRequest struct {
-	Messages        []chatgpt.ChatMessage
-	Prompt          string
-	RequestedN      int
-	ThinkingEffort  string
+	Messages       []chatgpt.ChatMessage
+	Prompt         string
+	RequestedN     int
+	ThinkingEffort string
 }
 
 var (
@@ -151,20 +151,6 @@ func extractPromptImageCount(prompt string) (int, bool) {
 		}
 	}
 	return 0, false
-}
-
-func isThinkingModel(chatModel *modelpkg.Model) bool {
-	if chatModel == nil {
-		return false
-	}
-	candidates := []string{chatModel.Slug, chatModel.UpstreamModelSlug}
-	for _, candidate := range candidates {
-		v := strings.ToLower(strings.TrimSpace(candidate))
-		if strings.Contains(v, "thinking") || strings.Contains(v, "reasoning") || strings.Contains(v, "-t-") {
-			return true
-		}
-	}
-	return false
 }
 
 func cloneMessagesForImageTool(messages []chatgpt.ChatMessage, prompt string) []chatgpt.ChatMessage {
