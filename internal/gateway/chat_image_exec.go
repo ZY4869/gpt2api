@@ -178,8 +178,6 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 		refund(apiErr.Code, "chat image mixed refund")
 		return nil, apiErr
 	}
-	signals := res.thinkingSignals()
-
 	actualCost := billing.ComputeImageCost(imageModel, len(res.Images), ratio)
 	if err := h.Billing.Settle(context.Background(), ak.UserID, ak.ID, estimatedCost, actualCost, refID, "chat image mixed settle"); err != nil {
 		logger.L().Error("billing settle chat mixed image", zap.Error(err), zap.String("ref", refID))
@@ -210,12 +208,8 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 			zap.String("strategy", strategy),
 			zap.String("conversation_id", res.ConversationID),
 			zap.Bool("partial_success", true),
-			zap.Bool("thinking_triggered", signals.Triggered),
-			zap.String("thinking_triggered_via", signals.TriggeredVia),
-			zap.Bool("saw_thought_patch", signals.SawThoughtPatch),
-			zap.Bool("saw_thinking_metadata", signals.SawThinkingMetadata),
-			zap.Bool("reasoning_empty", signals.ReasoningEmpty),
-			zap.Int("reasoning_len", signals.ReasoningLen),
+			zap.Bool("thinking_triggered", strings.TrimSpace(res.ReasoningText) != ""),
+			zap.Int("reasoning_len", len(strings.TrimSpace(res.ReasoningText))),
 		)
 	}
 
@@ -233,12 +227,8 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 		zap.Bool("partial_success", partialSuccess),
 		zap.Bool("is_preview", res.IsPreview),
 		zap.Bool("thinking_model", isThinkingModel(chatModel)),
-		zap.Bool("thinking_triggered", signals.Triggered),
-		zap.String("thinking_triggered_via", signals.TriggeredVia),
-		zap.Bool("saw_thought_patch", signals.SawThoughtPatch),
-		zap.Bool("saw_thinking_metadata", signals.SawThinkingMetadata),
-		zap.Bool("reasoning_empty", signals.ReasoningEmpty),
-		zap.Int("reasoning_len", signals.ReasoningLen),
+		zap.Bool("thinking_triggered", strings.TrimSpace(res.ReasoningText) != ""),
+		zap.Int("reasoning_len", len(strings.TrimSpace(res.ReasoningText))),
 	)
 	return res, nil
 }
@@ -369,17 +359,13 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 
 	finalState := collector.Result()
 	res := &mixedModeExecResult{
-		TaskID:               taskID,
-		AccountID:            lease.Account.ID,
-		ConversationID:       finalState.ConversationID,
-		AssistantText:        finalState.AssistantText,
-		ReasoningText:        finalState.ReasoningText,
-		ThinkingTriggered:    finalState.ThinkingTriggered,
-		ThinkingTriggeredVia: finalState.ThinkingTriggeredVia,
-		SawThoughtPatch:      finalState.SawThoughtPatch,
-		SawThinkingMetadata:  finalState.SawThinkingMetadata,
+		TaskID:         taskID,
+		AccountID:      lease.Account.ID,
+		ConversationID: finalState.ConversationID,
+		AssistantText:  finalState.AssistantText,
+		ReasoningText:  finalState.ReasoningText,
 	}
-	signals := res.thinkingSignals()
+	reasoningText := strings.TrimSpace(finalState.ReasoningText)
 
 	logger.L().Info("chat mixed image SSE parsed",
 		zap.String("task_id", taskID),
@@ -392,68 +378,24 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 		zap.Int("sse_files", len(finalState.FileIDs)),
 		zap.Int("sse_sediments", len(finalState.SedimentIDs)),
 		zap.Bool("thinking_model", isThinkingModel(chatModel)),
-		zap.Bool("thinking_triggered", signals.Triggered),
-		zap.String("thinking_triggered_via", signals.TriggeredVia),
-		zap.Bool("saw_thought_patch", signals.SawThoughtPatch),
-		zap.Bool("saw_thinking_metadata", signals.SawThinkingMetadata),
-		zap.Bool("reasoning_empty", signals.ReasoningEmpty),
-		zap.Int("reasoning_len", signals.ReasoningLen),
+		zap.Bool("thinking_triggered", reasoningText != ""),
+		zap.Int("reasoning_len", len(reasoningText)),
 		zap.Int("excluded_account_ids_count", len(excluded)),
 		zap.String("persona", cr.Persona),
 	)
-
-	if isThinkingModel(chatModel) && !signals.Triggered {
-		return nil, &mixedModeAPIError{
-			Status:  http.StatusBadGateway,
-			Code:    "thinking_not_triggered",
-			Message: "thinking 模型本轮未检测到思考信号,已判定生成失败,请重试",
-		}
+	fileRefs, isPreview, apiErr := resolveMixedModeFileRefs(
+		ctx,
+		cli,
+		res.ConversationID,
+		finalState.FileIDs,
+		finalState.SedimentIDs,
+		req.RequestedN,
+		h.mixedModePollMaxWait(chatModel),
+	)
+	if apiErr != nil {
+		return nil, apiErr
 	}
-
-	fileRefs := make([]string, 0, len(finalState.FileIDs)+len(finalState.SedimentIDs))
-	if len(finalState.FileIDs) > 0 {
-		fileRefs = append(fileRefs, finalState.FileIDs...)
-		for _, sid := range finalState.SedimentIDs {
-			fileRefs = append(fileRefs, "sed:"+sid)
-		}
-	} else {
-		if res.ConversationID == "" {
-			return nil, &mixedModeAPIError{
-				Status:  http.StatusBadGateway,
-				Code:    "upstream_image_not_returned",
-				Message: "上游本轮对话未返回可追踪的图片会话,请重试",
-			}
-		}
-		status, fids, sids := cli.PollConversationForImages(ctx, res.ConversationID, chatgpt.PollOpts{
-			MaxWait:     h.mixedModePollMaxWait(chatModel),
-			TargetCount: req.RequestedN,
-		})
-		switch status {
-		case chatgpt.PollStatusIMG2:
-			fileRefs = append(fileRefs, fids...)
-			for _, sid := range sids {
-				fileRefs = append(fileRefs, "sed:"+sid)
-			}
-		case chatgpt.PollStatusPreviewOnly:
-			res.IsPreview = true
-			fileRefs = append(fileRefs, fids...)
-			for _, sid := range sids {
-				fileRefs = append(fileRefs, "sed:"+sid)
-			}
-		case chatgpt.PollStatusTimeout:
-			return nil, &mixedModeAPIError{
-				Status:  http.StatusBadGateway,
-				Code:    "upstream_image_not_returned",
-				Message: "上游会话在规定时间内没有返回图片结果,请稍后重试",
-			}
-		default:
-			return nil, &mixedModeAPIError{
-				Status:  http.StatusBadGateway,
-				Code:    "upstream_error",
-				Message: "上游图片结果轮询失败,请稍后重试",
-			}
-		}
-	}
+	res.IsPreview = isPreview
 
 	if len(fileRefs) == 0 {
 		return nil, &mixedModeAPIError{
@@ -462,10 +404,6 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 			Message: "上游本轮对话未返回图片结果,没有自动降级到旧图片接口",
 		}
 	}
-	if len(fileRefs) > req.RequestedN {
-		fileRefs = fileRefs[:req.RequestedN]
-	}
-
 	res.FileRefs = make([]string, 0, len(fileRefs))
 	res.SignedURLs = make([]string, 0, len(fileRefs))
 	res.ContentTypes = make([]string, 0, len(fileRefs))

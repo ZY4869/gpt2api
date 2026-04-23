@@ -35,12 +35,12 @@ const (
 
 func NormalizeImageStrategy(v string) string {
 	switch strings.TrimSpace(strings.ToLower(v)) {
-	case "", ImageStrategyNativeThinking:
-		return ImageStrategyNativeThinking
-	case ImageStrategyPictureV2Thinking:
+	case "", ImageStrategyPictureV2Thinking:
 		return ImageStrategyPictureV2Thinking
-	default:
+	case ImageStrategyNativeThinking:
 		return ImageStrategyNativeThinking
+	default:
+		return ImageStrategyPictureV2Thinking
 	}
 }
 
@@ -60,10 +60,17 @@ type FChatOpts struct {
 }
 
 func (opt FChatOpts) imageStrategy() string {
-	if !opt.EnableImageTool && strings.TrimSpace(opt.ImageStrategy) == "" {
+	if opt.EnableImageTool && strings.TrimSpace(opt.ImageStrategy) == "" {
+		return ImageStrategyPictureV2Thinking
+	}
+	switch strings.TrimSpace(strings.ToLower(opt.ImageStrategy)) {
+	case ImageStrategyPictureV2Thinking:
+		return ImageStrategyPictureV2Thinking
+	case ImageStrategyNativeThinking:
+		return ImageStrategyNativeThinking
+	default:
 		return ""
 	}
-	return NormalizeImageStrategy(opt.ImageStrategy)
 }
 
 func (opt FChatOpts) usesPictureV2() bool {

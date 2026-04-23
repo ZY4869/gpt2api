@@ -70,7 +70,7 @@ func TestBuildFChatPayloadNativeThinking(t *testing.T) {
 	}
 }
 
-func TestBuildFChatPayloadDefaultsToNativeThinkingWhenImageToolEnabled(t *testing.T) {
+func TestBuildFChatPayloadDefaultsToPictureV2WhenImageToolEnabled(t *testing.T) {
 	opt := FChatOpts{
 		UpstreamModel:   "gpt-5-4-thinking",
 		Messages:        []ChatMessage{{Role: "user", Content: "画三张连续故事图"}},
@@ -80,12 +80,12 @@ func TestBuildFChatPayloadDefaultsToNativeThinkingWhenImageToolEnabled(t *testin
 	}
 
 	prep := buildFChatPreparePayload(opt)
-	if got := prep["system_hints"]; len(got.([]string)) != 0 {
-		t.Fatalf("prepare system_hints = %#v, want empty", got)
+	if got := prep["system_hints"]; len(got.([]string)) != 1 || got.([]string)[0] != "picture_v2" {
+		t.Fatalf("prepare system_hints = %#v, want picture_v2", got)
 	}
 
 	stream := buildFChatStreamPayload(opt)
-	if got := stream["system_hints"]; len(got.([]string)) != 0 {
-		t.Fatalf("stream system_hints = %#v, want empty", got)
+	if got := stream["system_hints"]; len(got.([]string)) != 1 || got.([]string)[0] != "picture_v2" {
+		t.Fatalf("stream system_hints = %#v, want picture_v2", got)
 	}
 }

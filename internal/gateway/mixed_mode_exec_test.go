@@ -548,14 +548,12 @@ func TestExecuteMixedModeChatImageLogsStructuredFields(t *testing.T) {
 		}
 		if callCount == 1 {
 			return &mixedModeExecResult{
-				TaskID:               taskID,
-				AccountID:            77,
-				ConversationID:       "conv_logs_full",
-				ReasoningText:        "先规划连续故事分镜。",
-				ThinkingTriggered:    true,
-				ThinkingTriggeredVia: "reasoning_text",
-				FileRefs:             []string{"file_a", "file_b", "file_c"},
-				SignedURLs:           []string{"https://signed.example/0", "https://signed.example/1", "https://signed.example/2"},
+				TaskID:         taskID,
+				AccountID:      77,
+				ConversationID: "conv_logs_full",
+				ReasoningText:  "先规划连续故事分镜。",
+				FileRefs:       []string{"file_a", "file_b", "file_c"},
+				SignedURLs:     []string{"https://signed.example/0", "https://signed.example/1", "https://signed.example/2"},
 				Images: []MixedModeImage{
 					{URL: "/p/img/task_logs_full/0?exp=1&sig=a", FileID: "file_a", ContentType: "image/png", TaskID: taskID},
 					{URL: "/p/img/task_logs_full/1?exp=1&sig=b", FileID: "file_b", ContentType: "image/png", TaskID: taskID},
@@ -564,14 +562,12 @@ func TestExecuteMixedModeChatImageLogsStructuredFields(t *testing.T) {
 			}, nil
 		}
 		return &mixedModeExecResult{
-			TaskID:               taskID,
-			AccountID:            77,
-			ConversationID:       "conv_logs_partial",
-			ReasoningText:        "先规划连续故事分镜。",
-			ThinkingTriggered:    true,
-			ThinkingTriggeredVia: "reasoning_text",
-			FileRefs:             []string{"file_d", "file_e"},
-			SignedURLs:           []string{"https://signed.example/3", "https://signed.example/4"},
+			TaskID:         taskID,
+			AccountID:      77,
+			ConversationID: "conv_logs_partial",
+			ReasoningText:  "先规划连续故事分镜。",
+			FileRefs:       []string{"file_d", "file_e"},
+			SignedURLs:     []string{"https://signed.example/3", "https://signed.example/4"},
 			Images: []MixedModeImage{
 				{URL: "/p/img/task_logs_partial/0?exp=1&sig=d", FileID: "file_d", ContentType: "image/png", TaskID: taskID},
 				{URL: "/p/img/task_logs_partial/1?exp=1&sig=e", FileID: "file_e", ContentType: "image/png", TaskID: taskID},
@@ -609,7 +605,7 @@ func TestExecuteMixedModeChatImageLogsStructuredFields(t *testing.T) {
 	start := findJSONLogEntry(t, entries, "req_logs_full", "chat mixed image start")
 	assertJSONLogInt(t, start, "requested_n", 3)
 	assertJSONLogInt(t, start, "actual_n", 0)
-	assertJSONLogString(t, start, "strategy", "native_thinking")
+	assertJSONLogString(t, start, "strategy", "picture_v2_thinking")
 	assertJSONLogString(t, start, "thinking_effort", "standard")
 	assertJSONLogString(t, start, "conversation_id", "")
 	assertJSONLogBool(t, start, "partial_success", false)
@@ -617,23 +613,22 @@ func TestExecuteMixedModeChatImageLogsStructuredFields(t *testing.T) {
 	success := findJSONLogEntry(t, entries, "req_logs_full", "chat mixed image success")
 	assertJSONLogInt(t, success, "requested_n", 3)
 	assertJSONLogInt(t, success, "actual_n", 3)
-	assertJSONLogString(t, success, "strategy", "native_thinking")
+	assertJSONLogString(t, success, "strategy", "picture_v2_thinking")
 	assertJSONLogString(t, success, "thinking_effort", "standard")
 	assertJSONLogString(t, success, "conversation_id", "conv_logs_full")
 	assertJSONLogBool(t, success, "partial_success", false)
 	assertJSONLogBool(t, success, "thinking_triggered", true)
-	assertJSONLogString(t, success, "thinking_triggered_via", "reasoning_text")
-	assertJSONLogBool(t, success, "reasoning_empty", false)
+	assertJSONLogInt(t, success, "reasoning_len", len("先规划连续故事分镜。"))
 
 	partial := findJSONLogEntry(t, entries, "req_logs_partial", "chat mixed image partial success")
 	assertJSONLogInt(t, partial, "requested_n", 3)
 	assertJSONLogInt(t, partial, "actual_n", 2)
-	assertJSONLogString(t, partial, "strategy", "native_thinking")
+	assertJSONLogString(t, partial, "strategy", "picture_v2_thinking")
 	assertJSONLogString(t, partial, "thinking_effort", "standard")
 	assertJSONLogString(t, partial, "conversation_id", "conv_logs_partial")
 	assertJSONLogBool(t, partial, "partial_success", true)
 	assertJSONLogBool(t, partial, "thinking_triggered", true)
-	assertJSONLogString(t, partial, "thinking_triggered_via", "reasoning_text")
+	assertJSONLogInt(t, partial, "reasoning_len", len("先规划连续故事分镜。"))
 
 	partialSuccess := findJSONLogEntry(t, entries, "req_logs_partial", "chat mixed image success")
 	assertJSONLogInt(t, partialSuccess, "requested_n", 3)

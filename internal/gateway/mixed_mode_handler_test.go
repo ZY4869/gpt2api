@@ -316,39 +316,6 @@ func TestMixedModeStreamingProtocols(t *testing.T) {
 		}
 	})
 
-	t.Run("responses_stream_metadata_only", func(t *testing.T) {
-		withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "resp_stream_meta", "resp_stream_meta_message", "resp_stream_meta_image")
-		withFrozenImageTaskIDs(t, "task_stream_resp_meta")
-		h, usageSink := makeHandler(func(_ context.Context, taskID string, _ *modelpkg.Model, _ *mixedModePreparedRequest, sink mixedModeStreamSink) (*mixedModeExecResult, *mixedModeAPIError) {
-			sink.OnAssistantDelta("我会保持故事连续性、统一画风和透明背景。")
-			return &mixedModeExecResult{
-				TaskID:               taskID,
-				AccountID:            99,
-				ConversationID:       "conv_stream_resp_meta",
-				AssistantText:        "我会保持故事连续性、统一画风和透明背景。",
-				ThinkingTriggered:    true,
-				ThinkingTriggeredVia: "metadata",
-				SawThinkingMetadata:  true,
-				FileRefs:             []string{"file_stream_resp_meta"},
-				SignedURLs:           []string{"https://signed.example/resp-meta"},
-				Images: []MixedModeImage{{
-					URL:         "/p/img/task_stream_resp_meta/0?exp=1710892800000&sig=respmetastream",
-					FileID:      "file_stream_resp_meta",
-					ContentType: "image/png",
-					TaskID:      taskID,
-				}},
-			}, nil
-		})
-		c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-thinking","input":"生成两张连续故事图","tools":[{"type":"image_generation"}],"stream":true}`, ak)
-		h.Responses(c)
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200", w.Code)
-		}
-		assertTextGolden(t, w.Body.String(), "responses_mixed_stream_metadata_success.sse")
-		if len(usageSink.rows) != 1 || usageSink.rows[0].Status != usage.StatusSuccess {
-			t.Fatalf("usage rows = %#v", usageSink.rows)
-		}
-	})
 }
 
 func TestMixedModeStreamingFailureEvents(t *testing.T) {
@@ -370,8 +337,8 @@ func TestMixedModeStreamingFailureEvents(t *testing.T) {
 			mixedModeConversationStreamRunner: func(context.Context, string, *modelpkg.Model, *mixedModePreparedRequest, mixedModeStreamSink) (*mixedModeExecResult, *mixedModeAPIError) {
 				return nil, &mixedModeAPIError{
 					Status:  http.StatusBadGateway,
-					Code:    "thinking_not_triggered",
-					Message: "thinking 模型本轮未检测到思考信号,已判定生成失败,请重试",
+					Code:    "upstream_image_not_returned",
+					Message: "上游会话在规定时间内没有返回图片结果,请稍后重试",
 				}
 			},
 		}
@@ -392,7 +359,7 @@ func TestMixedModeStreamingFailureEvents(t *testing.T) {
 			t.Fatalf("status = %d, want 200", w.Code)
 		}
 		assertTextGolden(t, w.Body.String(), "chat_mixed_stream_failed.sse")
-		if len(usageSink.rows) != 1 || usageSink.rows[0].ErrorCode != "thinking_not_triggered" {
+		if len(usageSink.rows) != 1 || usageSink.rows[0].ErrorCode != "upstream_image_not_returned" {
 			t.Fatalf("usage rows = %#v", usageSink.rows)
 		}
 	})
@@ -406,7 +373,7 @@ func TestMixedModeStreamingFailureEvents(t *testing.T) {
 			t.Fatalf("status = %d, want 200", w.Code)
 		}
 		assertTextGolden(t, w.Body.String(), "responses_mixed_stream_failed.sse")
-		if len(usageSink.rows) != 1 || usageSink.rows[0].ErrorCode != "thinking_not_triggered" {
+		if len(usageSink.rows) != 1 || usageSink.rows[0].ErrorCode != "upstream_image_not_returned" {
 			t.Fatalf("usage rows = %#v", usageSink.rows)
 		}
 	})

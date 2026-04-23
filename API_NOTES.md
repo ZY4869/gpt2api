@@ -270,7 +270,7 @@ polling 策略（见 `poll_conversation_for_images`）：
 
 5. 对 thinking 套图建议保留两种请求策略：
    - `picture_v2_thinking`：`system_hints=["picture_v2"]`，稳定优先
-   - `native_thinking`：顶层 `system_hints=[]`、消息 metadata 走 `selected_sources=[]`，仅用于灰度验证抓包形态
+   - `native_thinking`：保留为兼容回滚选项，不再作为默认 mixed-mode thinking 路径
 
 6. `thinking_effort` 只接受 mixed-mode image generation 请求。  
    当前数量不足率、空结果率、策略命中等观察统一以结构化日志字段为准，不额外引入新的 metrics 框架。

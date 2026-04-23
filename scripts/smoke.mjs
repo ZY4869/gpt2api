@@ -472,7 +472,7 @@ async function checkMixedMode() {
         await cleanup()
         return
       }
-      if (shouldSkipMixedModeCode(code) || code === 'thinking_not_triggered') {
+      if (shouldSkipMixedModeCode(code)) {
         skip('chat mixed-mode stream=true 成功链路', `环境未满足:${code} ${sseMsg(body)}`)
       } else {
         bad('chat mixed-mode stream=true 校验失败', `late-error code=${code} msg=${sseMsg(body)}`)
@@ -525,7 +525,7 @@ async function checkMixedMode() {
         await cleanup()
         return
       }
-      if (shouldSkipMixedModeCode(code) || code === 'thinking_not_triggered') {
+      if (shouldSkipMixedModeCode(code)) {
         skip('responses mixed-mode stream=true 成功链路', `环境未满足:${code} ${sseMsg(body)}`)
       } else {
         bad('responses mixed-mode stream=true 校验失败', `late-error code=${code} msg=${sseMsg(body)}`)

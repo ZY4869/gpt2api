@@ -102,7 +102,7 @@ const ERROR_CODE_LABEL: Record<string, string> = {
   upstream_unavailable: '上游暂不可用',
   upstream_image_not_returned: '上游本轮对话未返回图片结果',
   upstream_image_download_failed: '上游图片下载链接获取失败',
-  thinking_not_triggered: 'thinking 模型本轮未检测到思考信号,已判定生成失败,请重试',
+  thinking_not_triggered: '历史兼容错误: thinking 模型未返回可见思考文本',
   account_exhausted: '账号池暂无可用账号,请稍后重试',
   account_cooldown: '账号冷却中,请稍后重试',
   proxy_unhealthy: '代理不健康',

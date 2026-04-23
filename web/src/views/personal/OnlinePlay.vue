@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useUserStore } from '@/stores/user'
 import { formatCredit } from '@/utils/format'
+import { pollMixedImageTask, taskToMixedImages } from '@/utils/mixedImageTask'
 import { pickDefaultChatModel, preferredThinkingModelSlug, sortChatModelsForDisplay } from '@/utils/models'
 import {
   listMyModels,
@@ -97,6 +98,7 @@ const chatAbort = ref<AbortController | null>(null)
 const chatScroll = ref<HTMLElement | null>(null)
 const inputRef = ref<any>(null)
 const canUseChatImageMixed = ENABLE_CHAT_IMAGE_MIXED
+let chatTaskPollAbort: AbortController | null = null
 
 const suggestions = [
   { icon: '💡', title: '向我解释', sub: '量子纠缠到底是什么?' },
@@ -130,6 +132,7 @@ async function sendChat() {
     ElMessage.warning('请选择一个文字模型')
     return
   }
+  stopMixedModeTaskPolling()
   const now = Date.now()
   chatMsgs.value.push({ id: ++uid, role: 'user', content: text, at: now })
   chatInput.value = ''
@@ -181,6 +184,7 @@ async function sendChat() {
         onImages: (images) => {
           assistant.images = images
           assistant.pending = false
+          void startMixedModeTaskPolling(assistant, images)
           scrollChat()
         },
       },
@@ -189,6 +193,7 @@ async function sendChat() {
     if (!assistant.reasoning && result.reasoning) assistant.reasoning = result.reasoning
     if (!assistant.content && result.content) assistant.content = result.content
     if ((!assistant.images || assistant.images.length === 0) && result.images.length) assistant.images = result.images
+    if (result.images.length) void startMixedModeTaskPolling(assistant, result.images)
     assistant.pending = false
     if (!assistant.reasoning && !assistant.content && !assistant.images?.length) assistant.content = '(无输出)'
   } catch (err: unknown) {
@@ -207,10 +212,12 @@ async function sendChat() {
 
 function stopChat() {
   chatAbort.value?.abort()
+  stopMixedModeTaskPolling()
 }
 
 function resetChat() {
   if (chatSending.value) stopChat()
+  stopMixedModeTaskPolling()
   chatMsgs.value = []
 }
 
@@ -241,7 +248,43 @@ function messageCopyText(m: UIMessage): string {
   return [m.reasoning, m.content].filter((x) => !!x).join('\n\n')
 }
 
-onBeforeUnmount(() => chatAbort.value?.abort())
+function stopMixedModeTaskPolling() {
+  chatTaskPollAbort?.abort()
+  chatTaskPollAbort = null
+}
+
+async function startMixedModeTaskPolling(assistant: UIMessage, images: PlayMixedImage[]) {
+  const taskID = images[0]?.task_id
+  if (!chatImageMode.value || !taskID) return
+
+  stopMixedModeTaskPolling()
+  const controller = new AbortController()
+  chatTaskPollAbort = controller
+
+  try {
+    await pollMixedImageTask(taskID, {
+      signal: controller.signal,
+      onUpdate: (taskImages, task) => {
+        if (taskImages.length >= (assistant.images?.length || 0)) {
+          assistant.images = taskImages.length ? taskImages : taskToMixedImages(task)
+          assistant.pending = false
+          scrollChat()
+        }
+      },
+    })
+  } catch (err: unknown) {
+    if (!(err instanceof DOMException && err.name === 'AbortError')) {
+      /* ignore */
+    }
+  } finally {
+    if (chatTaskPollAbort === controller) chatTaskPollAbort = null
+  }
+}
+
+onBeforeUnmount(() => {
+  chatAbort.value?.abort()
+  stopMixedModeTaskPolling()
+})
 
 // ---------- 轻量 markdown 渲染(代码块 / 行内代码 / 粗体 / 链接) ----------
 function escapeHtml(s: string) {
