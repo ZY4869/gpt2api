@@ -92,6 +92,13 @@ func (h *Handler) mixedModeBlockingWait(chatModel *modelpkg.Model) time.Duration
 	return defaultMixedModeBlockingWait
 }
 
+func (h *Handler) mixedModeForegroundWait(chatModel *modelpkg.Model, waitForResult bool) time.Duration {
+	if waitForResult {
+		return h.mixedModePollMaxWait(chatModel)
+	}
+	return h.mixedModeBlockingWait(chatModel)
+}
+
 func (h *Handler) mixedModePollMaxWait(chatModel *modelpkg.Model) time.Duration {
 	if isThinkingModel(chatModel) {
 		if h.Settings != nil {

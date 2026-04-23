@@ -80,6 +80,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	res, apiErr := h.callMixedModeChatImage(c, rec, ak, req.Model, mixedModeRequestInput{
 		Messages:       messages,
 		RequestedN:     req.N,
+		WaitForResult:  req.WaitForResult,
 		ThinkingEffort: req.ThinkingEffort,
 	})
 	if apiErr != nil {

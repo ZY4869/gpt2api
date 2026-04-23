@@ -111,6 +111,7 @@ func (h *Handler) callMixedModeChatImage(
 	requestedModel string,
 	input mixedModeRequestInput,
 ) (*mixedModeExecResult, *mixedModeAPIError) {
+	input = h.resolveMixedModeRequestInput(input)
 	if h.mixedModeExec != nil {
 		return h.mixedModeExec(c, rec, ak, requestedModel, input)
 	}

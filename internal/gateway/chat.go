@@ -62,6 +62,7 @@ type Handler struct {
 		GatewayUpstreamTimeoutSec() int
 		GatewaySSEReadTimeoutSec() int
 		GatewayChatImageMixedEnabled() bool
+		GatewayChatImageDefaultWaitForResult() bool
 		GatewayChatImageThinkingStrategy() string
 		GatewayChatImageMaxN() int
 		GatewayChatImageRunTimeoutSec() int

@@ -340,20 +340,11 @@ for img in resp.data:
     print(img.url)
 ```
 
-### 7.4 异步(适合慢 prompt / 批量场景)
+### 7.4 图片接口返回方式
 
-```bash
-# 提交任务
-curl -X POST https://your-domain.com/v1/images/generations \
-  -H "Authorization: Bearer sk-xxx" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gpt-image-2","prompt":"...", "async":true}'
-# 返回 {"task_id":"img_xxx","status":"queued"}
-
-# 轮询结果
-curl https://your-domain.com/v1/images/tasks/img_xxx \
-  -H "Authorization: Bearer sk-xxx"
-```
+- `POST /v1/images/generations` 与 `POST /v1/images/edits` 当前都按**同步阻塞**方式返回最终图片
+- 当前实现**不支持** `{"async":true}` 这类图片主链路异步提交参数
+- `GET /v1/images/tasks/:id` 仍保留给 mixed-mode 显式异步补图、历史任务查询和排障使用
 
 ### 7.5 对话框生图(mixed-mode, 首版)
 
@@ -391,6 +382,24 @@ curl https://your-domain.com/v1/responses \
     "stream": false
   }'
 ```
+
+显式异步触发方式(仅 mixed-mode 支持):
+
+```bash
+curl https://your-domain.com/v1/chat/completions \
+  -H "Authorization: Bearer sk-xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5-thinking",
+    "image_generation": true,
+    "wait_for_result": false,
+    "messages": [
+      {"role": "user", "content": "请生成两张连续故事图"}
+    ]
+  }'
+```
+
+当 `wait_for_result=false` 且前台短等待内还没拿满套图时,服务端才会返回 `image_task`/`in_progress`,随后继续后台补齐。
 
 **成功返回(JSON 示例)**:
 
@@ -454,13 +463,13 @@ event: response.completed | response.in_progress
 
 - mixed-mode 只在 `image_generation=true` 或 `tools:[{type:"image_generation"}]` 时触发
 - 如需稳定触发思考,请显式使用 thinking 模型名;推荐 `gpt-5-thinking` 这个稳定别名(当前映射到 `gpt-5-4-thinking`)
-- `chat/completions stream=true` 已支持实时 `delta.reasoning` 与 `delta.content`; mixed-mode 结束 chunk 会在顶层附带 `images`,若上游已受理但图片仍在补齐,会改为返回 `image_task`
-- `/v1/responses stream=true` 会发送 `response.created`、`response.reasoning.delta`、`response.output_text.delta`、`response.image_generation_call.completed/in_progress`、`response.completed/in_progress`、`response.failed`
+- `chat/completions stream=true` 已支持实时 `delta.reasoning` 与 `delta.content`;默认会等待到最终结果并在结束 chunk 顶层附带 `images`,只有显式传 `wait_for_result=false` 且前台未拿满套图时才会返回 `image_task`
+- `/v1/responses stream=true` 会发送 `response.created`、`response.reasoning.delta`、`response.output_text.delta`、`response.image_generation_call.completed`、`response.completed`、`response.failed`;只有显式异步时才会出现 `response.image_generation_call.in_progress` / `response.in_progress`
 - thinking 普通对话非流式会返回 `choices[0].reasoning`; mixed-mode 成功时也会把 reasoning 聚合到文本返回里,便于前端展示
-- thinking mixed-mode 继续走显式 thinking 模型 + `thinking_effort` 路径;若首响未拿满套图,服务端会返回 HTTP 200 + `image_task` 并在后台继续补齐,调用方可通过任务接口刷新结果
+- thinking mixed-mode 继续走显式 thinking 模型 + `thinking_effort` 路径;省略 `wait_for_result` 时默认同步等待到完整结果或超时,显式传 `false` 时才会返回 HTTP 200 + `image_task` 并在后台继续补齐
 - 只有在短阻塞补拉和后台补拉都失败后,才会最终落成 `upstream_image_not_returned`;不会自动降级到旧 `/v1/images/generations`
 - mixed-mode 仍保留对话模型语义,对外 `model` 不变,内部只用默认图片模型配置做计费和 `image_tasks` 落库映射
-- thinking mixed-mode 默认使用更长的执行/轮询超时,并可通过 `gateway.chat_image_run_timeout_sec`、`gateway.chat_image_poll_max_wait_sec`、`gateway.chat_image_thinking_run_timeout_sec`、`gateway.chat_image_thinking_poll_max_wait_sec` 单独调优
+- mixed-mode 的默认等待策略由 `gateway.chat_image_default_wait_for_result` 控制(默认 `true`);thinking mixed-mode 默认使用更长的执行/轮询超时,并可通过 `gateway.chat_image_run_timeout_sec`、`gateway.chat_image_poll_max_wait_sec`、`gateway.chat_image_thinking_run_timeout_sec`、`gateway.chat_image_thinking_poll_max_wait_sec` 单独调优
 
 **当前参数兼容矩阵(截至 2026-04-23)**:
 
@@ -473,6 +482,7 @@ event: response.completed | response.in_progress
 | `stream` | 已支持 | `true` 时走 SSE 转发 |
 | `image_generation` | 已支持 | `true` 时进入 mixed-mode 生图链路 |
 | `n` | 条件支持 | 仅允许 `image_generation=true`;否则返回 400 |
+| `wait_for_result` | 条件支持 | 仅 mixed-mode 扩展字段;省略时默认同步等待(受 `gateway.chat_image_default_wait_for_result` 控制),传 `false` 时才允许返回 `image_task` |
 | `thinking_effort` | 条件支持 | 仅允许 `image_generation=true`;在 thinking mixed-mode 链路透传到上游 |
 | `max_tokens` | 部分支持 | 当前只用于预估计费和 TPM 额度,不作为上游硬输出上限 |
 | `temperature` / `top_p` / `user` | 已接收,暂未生效 | 当前不会透传到 chatgpt.com 上游 |
@@ -489,6 +499,7 @@ event: response.completed | response.in_progress
 | `image_generation` | 已支持 | 开启 mixed-mode 生图 |
 | `tools` | 部分支持 | 当前只识别 `[{"type":"image_generation"}]`;其他 tools 不会生效 |
 | `n` | 条件支持 | 仅允许 `image_generation=true` 或 `tools:[{"type":"image_generation"}]`;否则返回 400 |
+| `wait_for_result` | 条件支持 | 仅 mixed-mode 扩展字段;省略时默认同步等待(受 `gateway.chat_image_default_wait_for_result` 控制),传 `false` 时才允许返回 `status=in_progress` / `image_task` |
 | `thinking_effort` | 条件支持 | 仅允许 image mixed-mode;会透传到 thinking mixed-mode 上游 |
 | `temperature` / `user` | 已接收,暂未生效 | 当前不会透传到上游 |
 | 其他 responses 参数 | 未支持 | 例如 `max_output_tokens`、`tool_choice`、`parallel_tool_calls`、`metadata`、`modalities`、`response_format` 等,当前不会生效 |
@@ -567,7 +578,7 @@ ORDER BY img2_rate_pct DESC;
 |------|---------|---------|
 | **单请求 N 张** | `{"n": 4}` | 1 个账号 lease 下并发拆成 N 个独立 picture_v2 子任务,按实际成功张数聚合返回 |
 | **多请求并发** | SDK 线程池同时发 K 个请求 | K 个账号 lease 并行,受限于账号池数 × `min_interval_sec` |
-| **纯异步任务池** | `{"async": true}` 提交 + 轮询 | 后端 Worker 池消费,适合 1000+ 条 prompt 的大批量场景 |
+| **显式异步补图** | mixed-mode + `{"wait_for_result": false}` + 轮询任务 | 首响应先返回 `image_task`,后台继续补齐剩余图片 |
 
 **单请求多张(`n`)**:后端会在**同一账号 lease** 下拆成 N 个独立子任务并发执行,每个子任务目标 1 张图;最终按实际成功张数聚合返回,避免为单个请求占用多个账号。
 

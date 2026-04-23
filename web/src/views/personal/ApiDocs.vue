@@ -147,7 +147,7 @@ const chatImageCurl = computed(() => {
   -d '{
     "model": "${model}",
     "image_generation": true,
-    "stream": true,
+    "stream": false,
     "messages": [
       {"role": "user", "content": "请画一张雨夜霓虹街头的赛博朋克海报"}
     ]
@@ -180,6 +180,20 @@ const responsesCurl = computed(() => {
     "model": "${model}",
     "input": "请生成一张极简主义太空旅行海报",
     "tools": [{"type": "image_generation"}],
+    "stream": false
+  }'`
+})
+
+const responsesAsyncCurl = computed(() => {
+  const model = thinkingExampleModel.value
+  return `curl ${origin.value}/v1/responses \\
+  -H "Authorization: Bearer \${YOUR_API_KEY}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${model}",
+    "input": "请生成两张连续故事图",
+    "tools": [{"type": "image_generation"}],
+    "wait_for_result": false,
     "stream": true
   }'`
 })
@@ -244,6 +258,24 @@ data: [DONE]`
 })
 
 const responsesStreamExample = computed(() => {
+  const model = thinkingExampleModel.value
+  return `event: response.created
+data: {"id":"resp_xxx","object":"response","created_at":1710806400,"model":"${model}","status":"in_progress"}
+
+event: response.reasoning.delta
+data: {"type":"response.reasoning.delta","delta":"先拆分镜头与角色动作。"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"我会保持透明背景与统一画风。"}
+
+event: response.image_generation_call.completed
+data: {"type":"response.image_generation_call.completed","status":"completed","result":[{"type":"output_image","url":"${origin.value}/p/img/img_xxx/0?exp=...&sig=...","file_id":"file-xxx","content_type":"image/png","task_id":"img_xxx"}]}
+
+event: response.completed
+data: {"id":"resp_xxx","object":"response","status":"completed","images":[{"url":"${origin.value}/p/img/img_xxx/0?exp=...&sig=...","file_id":"file-xxx","content_type":"image/png","task_id":"img_xxx"}]}`
+})
+
+const responsesAsyncStreamExample = computed(() => {
   const model = thinkingExampleModel.value
   return `event: response.created
 data: {"id":"resp_xxx","object":"response","created_at":1710806400,"model":"${model}","status":"in_progress"}
@@ -404,7 +436,7 @@ onMounted(async () => {
               :closable="false"
               show-icon
               title="对话框生图首版说明"
-              description="chat/responses mixed-mode 仅在 image_generation=true 或 tools:[{type:'image_generation'}] 时触发,现已支持 stream=true。thinking chat chunk 会额外返回 delta.reasoning;/v1/responses 会发出 response.reasoning.delta、response.output_text.delta、response.image_generation_call.completed/in_progress、response.completed/in_progress、response.failed。若首响未拿满套图,响应会带 image_task,前端会继续通过任务接口补拉整套图。"
+              description="chat/responses mixed-mode 仅在 image_generation=true 或 tools:[{type:'image_generation'}] 时触发,现已支持 stream=true。默认省略 wait_for_result 时会同步等待结果;thinking chat chunk 会额外返回 delta.reasoning;/v1/responses 默认发出 response.image_generation_call.completed、response.completed。只有显式传 wait_for_result=false 且前台未拿满套图时,才会返回 image_task / response.in_progress 并继续通过任务接口补拉整套图。"
               style="margin-top: 12px"
             />
 
@@ -421,6 +453,10 @@ onMounted(async () => {
                 <pre class="code"><code>{{ responsesCurl }}</code></pre>
                 <el-button size="small" @click="copy(responsesCurl)">复制 curl</el-button>
               </el-tab-pane>
+              <el-tab-pane label="Responses 显式异步(curl)">
+                <pre class="code"><code>{{ responsesAsyncCurl }}</code></pre>
+                <el-button size="small" @click="copy(responsesAsyncCurl)">复制 curl</el-button>
+              </el-tab-pane>
               <el-tab-pane label="Responses(JSON 返回)">
                 <pre class="code"><code>{{ responsesJSONExample }}</code></pre>
                 <el-button size="small" @click="copy(responsesJSONExample)">复制 JSON 示例</el-button>
@@ -432,6 +468,10 @@ onMounted(async () => {
               <el-tab-pane label="Responses SSE 事件">
                 <pre class="code"><code>{{ responsesStreamExample }}</code></pre>
                 <el-button size="small" @click="copy(responsesStreamExample)">复制 SSE 事件</el-button>
+              </el-tab-pane>
+              <el-tab-pane label="Responses SSE 显式异步">
+                <pre class="code"><code>{{ responsesAsyncStreamExample }}</code></pre>
+                <el-button size="small" @click="copy(responsesAsyncStreamExample)">复制 SSE 事件</el-button>
               </el-tab-pane>
             </el-tabs>
           </template>

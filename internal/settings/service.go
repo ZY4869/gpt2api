@@ -221,6 +221,12 @@ func (s *Service) GatewaySSEReadTimeoutSec() int {
 	return n
 }
 func (s *Service) GatewayChatImageMixedEnabled() bool { return s.GetBool(GatewayChatImageMixedEnabled) }
+func (s *Service) GatewayChatImageDefaultWaitForResult() bool {
+	if strings.TrimSpace(s.GetString(GatewayChatImageDefaultWaitForResult)) == "" {
+		return true
+	}
+	return s.GetBool(GatewayChatImageDefaultWaitForResult)
+}
 func (s *Service) GatewayChatImageRunTimeoutSec() int {
 	n := int(s.GetInt(GatewayChatImageRunTimeoutSec))
 	if n <= 0 {

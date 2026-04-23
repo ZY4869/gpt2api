@@ -37,6 +37,9 @@ func TestExecuteMixedModeChatImageSuccessDefaultsToSingleImage(t *testing.T) {
 		if req.RequestedN != 1 {
 			t.Fatalf("requested_n = %d, want 1", req.RequestedN)
 		}
+		if !req.WaitForResult {
+			t.Fatalf("wait_for_result = %v, want true", req.WaitForResult)
+		}
 		return &mixedModeExecResult{
 			TaskID:         taskID,
 			AccountID:      77,
@@ -118,6 +121,9 @@ func TestExecuteMixedModeChatImageSuccessN3SettlesRequestedCount(t *testing.T) {
 		if req.RequestedN != 3 {
 			t.Fatalf("requested_n = %d, want 3", req.RequestedN)
 		}
+		if !req.WaitForResult {
+			t.Fatalf("wait_for_result = %v, want true", req.WaitForResult)
+		}
 		return &mixedModeExecResult{
 			TaskID:         taskID,
 			AccountID:      77,
@@ -166,7 +172,7 @@ func TestExecuteMixedModeChatImageSuccessN3SettlesRequestedCount(t *testing.T) {
 	}
 }
 
-func TestExecuteMixedModeChatImageInProgressLeavesUsagePending(t *testing.T) {
+func TestExecuteMixedModeChatImageExplicitAsyncLeavesUsagePending(t *testing.T) {
 	chatModel := &modelpkg.Model{ID: 11, Slug: "gpt-5-thinking", Type: modelpkg.TypeChat, Enabled: true}
 	imageModel := &modelpkg.Model{ID: 22, Slug: "gpt-image-2", Type: modelpkg.TypeImage, Enabled: true, ImagePricePerCall: 300}
 	taskStore := &fakeImageTaskStore{}
@@ -180,6 +186,9 @@ func TestExecuteMixedModeChatImageInProgressLeavesUsagePending(t *testing.T) {
 		Settings: fakeSettings{mixedEnabled: true},
 	}
 	h.mixedModeConversationRunner = func(_ context.Context, taskID string, _ *modelpkg.Model, req *mixedModePreparedRequest) (*mixedModeExecResult, *mixedModeAPIError) {
+		if req.WaitForResult {
+			t.Fatalf("wait_for_result = %v, want false", req.WaitForResult)
+		}
 		return &mixedModeExecResult{
 			Status:         mixedModeExecStatusInProgress,
 			TaskID:         taskID,
@@ -202,9 +211,11 @@ func TestExecuteMixedModeChatImageInProgressLeavesUsagePending(t *testing.T) {
 	ak := &apikey.APIKey{ID: 2, UserID: 3, Enabled: true}
 	c, _ := newJSONContext(t, "/v1/chat/completions", `{}`, ak)
 	n := 2
+	waitForResult := false
 	res, apiErr := h.executeMixedModeChatImage(c, rec, ak, "gpt-5-thinking", mixedModeRequestInput{
 		Messages:       []chatgpt.ChatMessage{{Role: "user", Content: "生成2张连续故事图"}},
 		RequestedN:     &n,
+		WaitForResult:  &waitForResult,
 		ThinkingEffort: "standard",
 	})
 	if apiErr != nil {
@@ -332,7 +343,10 @@ func TestExecuteMixedModeChatImagePartialSuccessSettlesActualCount(t *testing.T)
 		Billing:  bill,
 		Settings: fakeSettings{mixedEnabled: true},
 	}
-	h.mixedModeConversationRunner = func(context.Context, string, *modelpkg.Model, *mixedModePreparedRequest) (*mixedModeExecResult, *mixedModeAPIError) {
+	h.mixedModeConversationRunner = func(_ context.Context, _ string, _ *modelpkg.Model, req *mixedModePreparedRequest) (*mixedModeExecResult, *mixedModeAPIError) {
+		if !req.WaitForResult {
+			t.Fatalf("wait_for_result = %v, want true", req.WaitForResult)
+		}
 		return &mixedModeExecResult{
 			AccountID:      99,
 			ConversationID: "conv_partial",
@@ -364,6 +378,9 @@ func TestExecuteMixedModeChatImagePartialSuccessSettlesActualCount(t *testing.T)
 	}
 	if res == nil || len(res.Images) != 2 {
 		t.Fatalf("images = %d, want 2", len(res.Images))
+	}
+	if res.ImageTask != nil {
+		t.Fatalf("image_task = %#v, want nil", res.ImageTask)
 	}
 	if len(bill.preDeducts) != 1 || bill.preDeducts[0].Amount != 900 {
 		t.Fatalf("prededuct = %#v, want amount 900", bill.preDeducts)

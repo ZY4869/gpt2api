@@ -15,6 +15,7 @@ const defaultMixedModeMaxN = 10
 type mixedModeRequestInput struct {
 	Messages       []chatgpt.ChatMessage
 	RequestedN     *int
+	WaitForResult  *bool
 	ThinkingEffort string
 }
 
@@ -22,6 +23,7 @@ type mixedModePreparedRequest struct {
 	Messages       []chatgpt.ChatMessage
 	Prompt         string
 	RequestedN     int
+	WaitForResult  bool
 	ThinkingEffort string
 	async          *mixedModeAsyncState
 }
@@ -99,10 +101,15 @@ func prepareMixedModeRequest(
 	}
 
 	compiledPrompt := maybeAppendClaritySuffix(buildMixedModePrompt(prompt, requestedN))
+	waitForResult := true
+	if input.WaitForResult != nil {
+		waitForResult = *input.WaitForResult
+	}
 	return &mixedModePreparedRequest{
 		Messages:       cloneMessagesForImageTool(input.Messages, compiledPrompt),
 		Prompt:         compiledPrompt,
 		RequestedN:     requestedN,
+		WaitForResult:  waitForResult,
 		ThinkingEffort: effort,
 	}, nil
 }

@@ -68,6 +68,7 @@ func (h *Handler) streamMixedModeChatCompletions(
 	res, apiErr := h.executeMixedModeChatImageWithSink(c, rec, ak, req.Model, mixedModeRequestInput{
 		Messages:       req.Messages,
 		RequestedN:     req.N,
+		WaitForResult:  req.WaitForResult,
 		ThinkingEffort: req.ThinkingEffort,
 	}, &mixedModeChatChunkSink{
 		w:     w,
@@ -117,6 +118,7 @@ func (h *Handler) streamMixedModeResponses(
 	res, apiErr := h.executeMixedModeChatImageWithSink(c, rec, ak, req.Model, mixedModeRequestInput{
 		Messages:       messages,
 		RequestedN:     req.N,
+		WaitForResult:  req.WaitForResult,
 		ThinkingEffort: req.ThinkingEffort,
 	}, &mixedModeResponsesSink{w: w, f: flusher})
 	if apiErr != nil {

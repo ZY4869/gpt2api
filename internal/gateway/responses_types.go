@@ -13,6 +13,7 @@ type ResponseCreateRequest struct {
 	ImageGeneration bool              `json:"image_generation,omitempty"`
 	Tools           []ResponseToolDef `json:"tools,omitempty"`
 	N               *int              `json:"n,omitempty"`
+	WaitForResult   *bool             `json:"wait_for_result,omitempty"`
 	ThinkingEffort  string            `json:"thinking_effort,omitempty"`
 }
 

@@ -57,6 +57,7 @@ const (
 	GatewayUpstreamTimeoutSec              = "gateway.upstream_timeout_sec"
 	GatewaySSEReadTimeoutSec               = "gateway.sse_read_timeout_sec"
 	GatewayChatImageMixedEnabled           = "gateway.chat_image_mixed_enabled"
+	GatewayChatImageDefaultWaitForResult   = "gateway.chat_image_default_wait_for_result"
 	GatewayChatImageRunTimeoutSec          = "gateway.chat_image_run_timeout_sec"
 	GatewayChatImagePollMaxWaitSec         = "gateway.chat_image_poll_max_wait_sec"
 	GatewayChatImageThinkingRunTimeoutSec  = "gateway.chat_image_thinking_run_timeout_sec"
@@ -133,6 +134,7 @@ var Defs = []KeyDef{
 	{Key: GatewayUpstreamTimeoutSec, Type: "int", Category: "gateway", Default: "60", Label: "上游请求超时(秒)", Desc: "非流式请求上游响应超时"},
 	{Key: GatewaySSEReadTimeoutSec, Type: "int", Category: "gateway", Default: "120", Label: "SSE 读超时(秒)", Desc: "流式响应无数据时的中断阈值"},
 	{Key: GatewayChatImageMixedEnabled, Type: "bool", Category: "gateway", Default: "false", Label: "启用对话框生图", Desc: "允许 /v1/chat/completions 与 /v1/responses 在同轮对话里触发生图"},
+	{Key: GatewayChatImageDefaultWaitForResult, Type: "bool", Category: "gateway", Default: "true", Label: "对话框生图默认同步等待", Desc: "mixed-mode 省略 wait_for_result 时,默认等待完整结果;关闭后默认走显式异步风格"},
 	{Key: GatewayChatImageRunTimeoutSec, Type: "int", Category: "gateway", Default: "360", Label: "对话框生图总超时(秒)", Desc: "非 thinking mixed-mode 生图整轮执行的总超时"},
 	{Key: GatewayChatImagePollMaxWaitSec, Type: "int", Category: "gateway", Default: "180", Label: "对话框生图轮询上限(秒)", Desc: "非 thinking mixed-mode 在 conversation 轮询图片结果的最长等待"},
 	{Key: GatewayChatImageThinkingRunTimeoutSec, Type: "int", Category: "gateway", Default: "600", Label: "思考生图总超时(秒)", Desc: "thinking mixed-mode 生图整轮执行的总超时"},

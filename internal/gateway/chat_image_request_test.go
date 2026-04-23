@@ -22,6 +22,9 @@ func TestPrepareMixedModeRequestUsesPromptCountAndDefaultThinkingEffort(t *testi
 	if req.RequestedN != 3 {
 		t.Fatalf("requested_n = %d, want 3", req.RequestedN)
 	}
+	if !req.WaitForResult {
+		t.Fatalf("wait_for_result = %v, want true", req.WaitForResult)
+	}
 	if req.ThinkingEffort != "standard" {
 		t.Fatalf("thinking_effort = %q, want standard", req.ThinkingEffort)
 	}
@@ -35,11 +38,13 @@ func TestPrepareMixedModeRequestUsesPromptCountAndDefaultThinkingEffort(t *testi
 
 func TestPrepareMixedModeRequestPrefersExplicitNWhenPromptHasNoCount(t *testing.T) {
 	n := 4
+	waitForResult := false
 	req, apiErr := prepareMixedModeRequest(
 		&modelpkg.Model{Slug: "gpt-5-thinking", Type: modelpkg.TypeChat, Enabled: true},
 		mixedModeRequestInput{
 			Messages:       []chatgpt.ChatMessage{{Role: "user", Content: "画一个连续故事书场景"}},
 			RequestedN:     &n,
+			WaitForResult:  &waitForResult,
 			ThinkingEffort: "high",
 		},
 		10,
@@ -49,6 +54,9 @@ func TestPrepareMixedModeRequestPrefersExplicitNWhenPromptHasNoCount(t *testing.
 	}
 	if req.RequestedN != 4 {
 		t.Fatalf("requested_n = %d, want 4", req.RequestedN)
+	}
+	if req.WaitForResult {
+		t.Fatalf("wait_for_result = %v, want false", req.WaitForResult)
 	}
 	if req.ThinkingEffort != "high" {
 		t.Fatalf("thinking_effort = %q, want high", req.ThinkingEffort)

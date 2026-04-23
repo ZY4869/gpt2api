@@ -44,6 +44,9 @@ func TestChatCompletionsMixedMode_Golden(t *testing.T) {
 				if input.RequestedN != nil {
 					t.Fatalf("expected nil requested_n, got %d", *input.RequestedN)
 				}
+				if input.WaitForResult == nil || !*input.WaitForResult {
+					t.Fatalf("wait_for_result = %#v, want true", input.WaitForResult)
+				}
 				return &mixedModeExecResult{
 					Images: []MixedModeImage{{
 						URL:         "/p/img/task_mixed/0?exp=1710892800000&sig=abc123mixed",
@@ -151,6 +154,9 @@ func TestResponsesMixedMode_Golden(t *testing.T) {
 				if input.RequestedN != nil {
 					t.Fatalf("expected nil requested_n, got %d", *input.RequestedN)
 				}
+				if input.WaitForResult == nil || !*input.WaitForResult {
+					t.Fatalf("wait_for_result = %#v, want true", input.WaitForResult)
+				}
 				return &mixedModeExecResult{
 					Images: []MixedModeImage{{
 						URL:         "/p/img/task_response/0?exp=1710892800000&sig=resp123mixed",
@@ -217,16 +223,19 @@ func TestResponsesMixedMode_Golden(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsMixedModeInProgressResponse(t *testing.T) {
+func TestChatCompletionsMixedModeExplicitAsyncInProgressResponse(t *testing.T) {
 	withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "mixed-chat-pending")
 	ak := &apikey.APIKey{ID: 7, UserID: 9, Enabled: true}
 	usageSink := &fakeUsageStore{}
 	h := &Handler{
 		Usage:    usageSink,
 		Settings: fakeSettings{mixedEnabled: true},
-		mixedModeExec: func(_ *gin.Context, rec *usage.Log, _ *apikey.APIKey, _ string, _ mixedModeRequestInput) (*mixedModeExecResult, *mixedModeAPIError) {
+		mixedModeExec: func(_ *gin.Context, rec *usage.Log, _ *apikey.APIKey, _ string, input mixedModeRequestInput) (*mixedModeExecResult, *mixedModeAPIError) {
 			rec.Type = usage.TypeImage
 			rec.Status = usage.StatusPending
+			if input.WaitForResult == nil || *input.WaitForResult {
+				t.Fatalf("wait_for_result = %#v, want false", input.WaitForResult)
+			}
 			return &mixedModeExecResult{
 				Status:        mixedModeExecStatusInProgress,
 				AssistantText: "图片任务已受理，正在继续补齐。",
@@ -246,7 +255,7 @@ func TestChatCompletionsMixedModeInProgressResponse(t *testing.T) {
 			}, nil
 		},
 	}
-	c, w := newJSONContext(t, "/v1/chat/completions", `{"model":"gpt-5-thinking","image_generation":true,"stream":false,"messages":[{"role":"user","content":"生成两张连续故事图"}]}`, ak)
+	c, w := newJSONContext(t, "/v1/chat/completions", `{"model":"gpt-5-thinking","image_generation":true,"wait_for_result":false,"stream":false,"messages":[{"role":"user","content":"生成两张连续故事图"}]}`, ak)
 	h.ChatCompletions(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
@@ -267,16 +276,19 @@ func TestChatCompletionsMixedModeInProgressResponse(t *testing.T) {
 	}
 }
 
-func TestResponsesMixedModeInProgressResponse(t *testing.T) {
+func TestResponsesMixedModeExplicitAsyncInProgressResponse(t *testing.T) {
 	withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "mixed-response-pending", "mixed-response-pending-message", "mixed-response-pending-image")
 	ak := &apikey.APIKey{ID: 7, UserID: 9, Enabled: true}
 	usageSink := &fakeUsageStore{}
 	h := &Handler{
 		Usage:    usageSink,
 		Settings: fakeSettings{mixedEnabled: true},
-		mixedModeExec: func(_ *gin.Context, rec *usage.Log, _ *apikey.APIKey, _ string, _ mixedModeRequestInput) (*mixedModeExecResult, *mixedModeAPIError) {
+		mixedModeExec: func(_ *gin.Context, rec *usage.Log, _ *apikey.APIKey, _ string, input mixedModeRequestInput) (*mixedModeExecResult, *mixedModeAPIError) {
 			rec.Type = usage.TypeImage
 			rec.Status = usage.StatusPending
+			if input.WaitForResult == nil || *input.WaitForResult {
+				t.Fatalf("wait_for_result = %#v, want false", input.WaitForResult)
+			}
 			return &mixedModeExecResult{
 				Status:        mixedModeExecStatusInProgress,
 				ReasoningText: "先稳定分镜，再继续等第二张图完成。",
@@ -296,7 +308,7 @@ func TestResponsesMixedModeInProgressResponse(t *testing.T) {
 			}, nil
 		},
 	}
-	c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-thinking","input":"生成两张连续故事图","tools":[{"type":"image_generation"}],"stream":false}`, ak)
+	c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-thinking","input":"生成两张连续故事图","tools":[{"type":"image_generation"}],"wait_for_result":false,"stream":false}`, ak)
 	h.Responses(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
@@ -357,6 +369,9 @@ func TestMixedModeStreamingProtocols(t *testing.T) {
 			if req.RequestedN != 1 {
 				t.Fatalf("requested_n = %d, want 1", req.RequestedN)
 			}
+			if !req.WaitForResult {
+				t.Fatalf("wait_for_result = %v, want true", req.WaitForResult)
+			}
 			sink.OnReasoningDelta("先规划角色动作。")
 			sink.OnAssistantDelta("我会生成一张透明背景故事图。")
 			return &mixedModeExecResult{
@@ -389,7 +404,10 @@ func TestMixedModeStreamingProtocols(t *testing.T) {
 	t.Run("responses_stream", func(t *testing.T) {
 		withFrozenResponseMeta(t, time.Unix(1710806400, 0).UTC(), "resp_stream_created", "resp_stream_message", "resp_stream_image")
 		withFrozenImageTaskIDs(t, "task_stream_resp")
-		h, usageSink := makeHandler(func(_ context.Context, taskID string, _ *modelpkg.Model, _ *mixedModePreparedRequest, sink mixedModeStreamSink) (*mixedModeExecResult, *mixedModeAPIError) {
+		h, usageSink := makeHandler(func(_ context.Context, taskID string, _ *modelpkg.Model, req *mixedModePreparedRequest, sink mixedModeStreamSink) (*mixedModeExecResult, *mixedModeAPIError) {
+			if !req.WaitForResult {
+				t.Fatalf("wait_for_result = %v, want true", req.WaitForResult)
+			}
 			sink.OnReasoningDelta("先拆分为两镜头。")
 			sink.OnAssistantDelta("我会保持角色一致和透明背景。")
 			return &mixedModeExecResult{
@@ -482,7 +500,7 @@ func TestMixedModeStreamingFailureEvents(t *testing.T) {
 	})
 }
 
-func TestMixedModeStreamingInProgressEvents(t *testing.T) {
+func TestMixedModeStreamingExplicitAsyncInProgressEvents(t *testing.T) {
 	ak := &apikey.APIKey{ID: 7, UserID: 9, Enabled: true}
 	chatModel := &modelpkg.Model{ID: 11, Slug: "gpt-5-thinking", Type: modelpkg.TypeChat, Enabled: true}
 	imageModel := &modelpkg.Model{ID: 22, Slug: "gpt-image-2", Type: modelpkg.TypeImage, Enabled: true, ImagePricePerCall: 300}
@@ -499,7 +517,10 @@ func TestMixedModeStreamingInProgressEvents(t *testing.T) {
 		},
 		Billing: &fakeBillingStore{},
 		Keys:    fakeKeyStore{dao: &fakeKeyDAO{}},
-		mixedModeConversationStreamRunner: func(_ context.Context, taskID string, _ *modelpkg.Model, _ *mixedModePreparedRequest, sink mixedModeStreamSink) (*mixedModeExecResult, *mixedModeAPIError) {
+		mixedModeConversationStreamRunner: func(_ context.Context, taskID string, _ *modelpkg.Model, req *mixedModePreparedRequest, sink mixedModeStreamSink) (*mixedModeExecResult, *mixedModeAPIError) {
+			if req.WaitForResult {
+				t.Fatalf("wait_for_result = %v, want false", req.WaitForResult)
+			}
 			sink.OnReasoningDelta("先把首张图稳定下来。")
 			return &mixedModeExecResult{
 				Status:        mixedModeExecStatusInProgress,
@@ -528,7 +549,7 @@ func TestMixedModeStreamingInProgressEvents(t *testing.T) {
 		ImageAccResolver: stubImageAccountResolver{},
 	}
 
-	c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-thinking","input":"生成两张连续故事图","tools":[{"type":"image_generation"}],"stream":true}`, ak)
+	c, w := newJSONContext(t, "/v1/responses", `{"model":"gpt-5-thinking","input":"生成两张连续故事图","tools":[{"type":"image_generation"}],"wait_for_result":false,"stream":true}`, ak)
 	h.Responses(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
@@ -577,6 +598,9 @@ func TestMixedModePassesNAndThinkingEffortToExecutor(t *testing.T) {
 				if input.RequestedN == nil || *input.RequestedN != 3 {
 					t.Fatalf("requested_n = %#v, want 3", input.RequestedN)
 				}
+				if input.WaitForResult == nil || !*input.WaitForResult {
+					t.Fatalf("wait_for_result = %#v, want true", input.WaitForResult)
+				}
 				if input.ThinkingEffort != "high" {
 					t.Fatalf("thinking_effort = %q, want high", input.ThinkingEffort)
 				}
@@ -600,6 +624,9 @@ func TestMixedModePassesNAndThinkingEffortToExecutor(t *testing.T) {
 				rec.Status = usage.StatusSuccess
 				if input.RequestedN == nil || *input.RequestedN != 3 {
 					t.Fatalf("requested_n = %#v, want 3", input.RequestedN)
+				}
+				if input.WaitForResult == nil || !*input.WaitForResult {
+					t.Fatalf("wait_for_result = %#v, want true", input.WaitForResult)
 				}
 				if input.ThinkingEffort != "high" {
 					t.Fatalf("thinking_effort = %q, want high", input.ThinkingEffort)

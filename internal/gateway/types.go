@@ -13,6 +13,7 @@ type ChatCompletionsRequest struct {
 	User            string                 `json:"user,omitempty"`
 	ImageGeneration bool                   `json:"image_generation,omitempty"`
 	N               *int                   `json:"n,omitempty"`
+	WaitForResult   *bool                  `json:"wait_for_result,omitempty"`
 	ThinkingEffort  string                 `json:"thinking_effort,omitempty"`
 	Extra           map[string]interface{} `json:"-"`
 }

@@ -29,6 +29,7 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 	input mixedModeRequestInput,
 	sink mixedModeStreamSink,
 ) (*mixedModeExecResult, *mixedModeAPIError) {
+	input = h.resolveMixedModeRequestInput(input)
 	if !h.chatImageEnabled() {
 		return nil, &mixedModeAPIError{
 			Status:  http.StatusForbidden,
@@ -171,6 +172,7 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 		zap.String("task_id", taskID),
 		zap.Int("requested_n", mixedReq.RequestedN),
 		zap.Int("actual_n", 0),
+		zap.Bool("wait_for_result", mixedReq.WaitForResult),
 		zap.String("thinking_effort", mixedReq.ThinkingEffort),
 		zap.String("strategy", strategy),
 		zap.String("conversation_id", ""),
@@ -203,6 +205,7 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 			zap.String("conversation_id", res.ConversationID),
 			zap.Int("requested_n", mixedReq.RequestedN),
 			zap.Int("ready_n", len(res.Images)),
+			zap.Bool("wait_for_result", mixedReq.WaitForResult),
 			zap.String("thinking_effort", mixedReq.ThinkingEffort),
 			zap.String("strategy", strategy))
 		return res, nil
@@ -233,6 +236,7 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 			zap.String("task_id", taskID),
 			zap.Int("requested_n", mixedReq.RequestedN),
 			zap.Int("actual_n", len(res.Images)),
+			zap.Bool("wait_for_result", mixedReq.WaitForResult),
 			zap.String("thinking_effort", mixedReq.ThinkingEffort),
 			zap.String("strategy", strategy),
 			zap.String("conversation_id", res.ConversationID),
@@ -251,6 +255,7 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 		zap.Int("requested_n", mixedReq.RequestedN),
 		zap.Int("actual_n", len(res.Images)),
 		zap.Int("images", len(res.Images)),
+		zap.Bool("wait_for_result", mixedReq.WaitForResult),
 		zap.String("thinking_effort", mixedReq.ThinkingEffort),
 		zap.String("strategy", strategy),
 		zap.Bool("partial_success", partialSuccess),
@@ -432,7 +437,7 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 		initialRefs,
 		asyncAccepted,
 		req.RequestedN,
-		h.mixedModeBlockingWait(chatModel),
+		h.mixedModeForegroundWait(chatModel, req.WaitForResult),
 		nil,
 	)
 	if recoverErr != nil && !errors.Is(recoverErr, context.Canceled) {
@@ -452,7 +457,7 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 	if len(fileRefs) >= req.RequestedN {
 		return res, nil
 	}
-	if accepted {
+	if accepted && !req.WaitForResult {
 		res.Status = mixedModeExecStatusInProgress
 		res.ImageTask = buildMixedModeImageTask(taskID, res.ConversationID, req.RequestedN, len(res.Images), image.StatusRunning)
 		releaseLease = false

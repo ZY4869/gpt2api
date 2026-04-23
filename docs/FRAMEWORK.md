@@ -241,10 +241,11 @@ DispatchAccount(modelType) -> (Account, Unlock, err)
 - mixed-mode 生图首版额外支持:
   - `POST /v1/chat/completions` + `image_generation=true`
   - `POST /v1/responses` + `image_generation=true` 或 `tools:[{type:"image_generation"}]`
+- `POST /v1/images/generations` / `POST /v1/images/edits` 当前仍是同步阻塞返回,不宣称 `async:true` 协议
 - thinking 普通对话在 `chat.completions` 流式 chunk 中额外透出 `delta.reasoning`,非流式则透出 `choices[0].reasoning`
-- mixed-mode 成功时保留标准响应外壳,并在顶层追加 `images` 扩展数组;`/v1/responses` 的 `output` 会带 `message` + `image_generation_call`;若首响未拿满套图,额外返回 `image_task`
-- mixed-mode 已支持 `stream=true`;`chat/completions` 末尾 chunk 可带顶层 `images` 或 `image_task`,`/v1/responses` 会发送 `response.created` / `response.reasoning.delta` / `response.output_text.delta` / `response.image_generation_call.completed|in_progress` / `response.completed|in_progress` / `response.failed`
-- thinking mixed-mode 保留 `thinking_effort` 透传,但不再因为缺少可见 reasoning 文本而直接判失败;若首响未拿满套图,服务端会返回 `in_progress` 并继续通过任务接口补齐整套图
+- mixed-mode 成功时保留标准响应外壳,并在顶层追加 `images` 扩展数组;`/v1/responses` 的 `output` 会带 `message` + `image_generation_call`;只有显式传 `wait_for_result=false` 且前台未拿满套图时才额外返回 `image_task`
+- mixed-mode 已支持 `stream=true`;默认走 `response.image_generation_call.completed` / `response.completed` 收敛结果,只有显式异步时才会出现 `response.image_generation_call.in_progress` / `response.in_progress`
+- thinking mixed-mode 保留 `thinking_effort` 透传,但不再因为缺少可见 reasoning 文本而直接判失败;省略 `wait_for_result` 时默认同步等待(受 `gateway.chat_image_default_wait_for_result` 控制),显式传 `false` 时继续通过任务接口补齐整套图
 - mixed-mode 只有在短阻塞补拉和后台补拉都失败后,才最终返回 `upstream_image_not_returned`,不会自动降级到旧 `/v1/images/generations`
 
 ### 6.3 积分预扣与结算

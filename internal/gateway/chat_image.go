@@ -69,6 +69,22 @@ func (h *Handler) mixedModeImageStrategy(chatModel *modelpkg.Model) string {
 	return chatgpt.NormalizeImageStrategy(h.Settings.GatewayChatImageThinkingStrategy())
 }
 
+func (h *Handler) mixedModeWaitForResult(v *bool) bool {
+	if v != nil {
+		return *v
+	}
+	if h.Settings != nil {
+		return h.Settings.GatewayChatImageDefaultWaitForResult()
+	}
+	return true
+}
+
+func (h *Handler) resolveMixedModeRequestInput(input mixedModeRequestInput) mixedModeRequestInput {
+	waitForResult := h.mixedModeWaitForResult(input.WaitForResult)
+	input.WaitForResult = &waitForResult
+	return input
+}
+
 func (h *Handler) handleChatImageGeneration(c *gin.Context, rec *usage.Log, ak *apikey.APIKey, req *ChatCompletionsRequest) {
 	if req.Stream {
 		h.streamMixedModeChatCompletions(c, rec, ak, req)
@@ -78,6 +94,7 @@ func (h *Handler) handleChatImageGeneration(c *gin.Context, rec *usage.Log, ak *
 	res, apiErr := h.callMixedModeChatImage(c, rec, ak, req.Model, mixedModeRequestInput{
 		Messages:       req.Messages,
 		RequestedN:     req.N,
+		WaitForResult:  req.WaitForResult,
 		ThinkingEffort: req.ThinkingEffort,
 	})
 	if apiErr != nil {

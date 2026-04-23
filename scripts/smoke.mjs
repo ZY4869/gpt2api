@@ -490,8 +490,6 @@ async function checkMixedMode() {
     } else if (body.includes('data: [DONE]') && body.includes('"images"')) {
       if (body.includes('"reasoning"')) ok('chat mixed-mode stream=true 返回 SSE reasoning,并在最终 chunk 附带 images')
       else ok('chat mixed-mode stream=true 已完成并返回最终 images(本轮可能没有可见 reasoning 文本)')
-    } else if (body.includes('data: [DONE]') && body.includes('"image_task"') && body.includes('"status":"running"')) {
-      ok('chat mixed-mode stream=true 已返回 in_progress image_task,后续可继续拉取任务结果')
     } else {
       bad('chat mixed-mode stream=true 校验失败', `body=${body.slice(0, 500)}`)
     }
@@ -517,10 +515,8 @@ async function checkMixedMode() {
   }
   const chatImages = chatResp.body?.images
   const chatTask = chatResp.body?.image_task
-  if (chatResp.status === 200 && Array.isArray(chatImages) && chatImages.length > 0) {
+  if (chatResp.status === 200 && Array.isArray(chatImages) && chatImages.length > 0 && !chatTask) {
     ok(`chat mixed-mode 返回 ${chatImages.length} 张图片,并携带顶层 images 字段`)
-  } else if (chatResp.status === 200 && chatTask?.status === 'running') {
-    ok(`chat mixed-mode 已返回 image_task 继续补图(task=${chatTask.task_id}, ready=${chatTask.ready_n ?? 0}/${chatTask.requested_n ?? '?'})`)
   } else {
     bad('chat mixed-mode 成功响应结构异常', `status=${chatResp.status} code=${openaiCode(chatResp)} body=${JSON.stringify(chatResp.body)}`)
   }
@@ -545,11 +541,9 @@ async function checkMixedMode() {
       } else {
         bad('responses mixed-mode stream=true 校验失败', `late-error code=${code} msg=${sseMsg(body)}`)
       }
-    } else if (hasOrderedResponsesStreamEvents(body) && body.includes('"type":"output_image"') && body.includes('event: response.completed')) {
+    } else if (hasOrderedResponsesStreamEvents(body) && body.includes('"type":"output_image"') && body.includes('event: response.completed') && !body.includes('event: response.in_progress') && !body.includes('"image_task"')) {
       if (body.includes('event: response.reasoning.delta')) ok('responses mixed-mode stream=true 返回 reasoning 事件,并按 created -> delta -> image_generation_call.completed -> completed 顺序结束')
       else ok('responses mixed-mode stream=true 未返回可见 reasoning 事件,但已按 created -> delta -> image_generation_call.completed -> completed 顺序结束')
-    } else if (hasOrderedResponsesInProgressEvents(body) && body.includes('"image_task"')) {
-      ok('responses mixed-mode stream=true 已返回 in_progress 事件和 image_task,后续可继续拉取任务结果')
     } else {
       bad('responses mixed-mode stream=true 校验失败', `events=${listSSEEventNames(body).join(' > ')} body=${body.slice(0, 600)}`)
     }
@@ -571,12 +565,55 @@ async function checkMixedMode() {
   const responseImages = responsesResp.body?.images
   const responseTask = responsesResp.body?.image_task
   const hasImageCall = Array.isArray(responsesResp.body?.output) && responsesResp.body.output.some((x) => x?.type === 'image_generation_call')
-  if (responsesResp.status === 200 && Array.isArray(responseImages) && responseImages.length > 0 && hasImageCall) {
+  if (responsesResp.status === 200 && Array.isArray(responseImages) && responseImages.length > 0 && hasImageCall && !responseTask && responsesResp.body?.status === 'completed') {
     ok(`responses mixed-mode 返回 ${responseImages.length} 张图片,output 中包含 image_generation_call`)
-  } else if (responsesResp.status === 200 && responsesResp.body?.status === 'in_progress' && responseTask?.status === 'running' && hasImageCall) {
-    ok(`responses mixed-mode 已返回 in_progress image_task(task=${responseTask.task_id}, ready=${responseTask.ready_n ?? 0}/${responseTask.requested_n ?? '?'})`)
   } else {
     bad('responses mixed-mode 成功响应结构异常', `status=${responsesResp.status} code=${openaiCode(responsesResp)} body=${JSON.stringify(responsesResp.body)}`)
+  }
+
+  const chatAsyncResp = await call('POST', '/v1/chat/completions', { token: apiKey, body: {
+    model: MIXED_MODEL,
+    image_generation: true,
+    wait_for_result: false,
+    stream: false,
+    messages: [{ role: 'user', content: MIXED_PROMPT }],
+  }})
+  if (shouldSkipMixedMode(chatAsyncResp)) {
+    skip('chat mixed-mode 显式异步链路', `环境未满足:${openaiCode(chatAsyncResp)} ${openaiMsg(chatAsyncResp)}`)
+    await cleanup()
+    return
+  }
+  const chatAsyncImages = chatAsyncResp.body?.images
+  const chatAsyncTask = chatAsyncResp.body?.image_task
+  if (chatAsyncResp.status === 200 && chatAsyncTask?.status === 'running') {
+    ok(`chat mixed-mode wait_for_result=false 已返回 image_task(task=${chatAsyncTask.task_id}, ready=${chatAsyncTask.ready_n ?? 0}/${chatAsyncTask.requested_n ?? '?'})`)
+  } else if (chatAsyncResp.status === 200 && Array.isArray(chatAsyncImages) && chatAsyncImages.length > 0) {
+    ok(`chat mixed-mode wait_for_result=false 本轮已直接完成,返回 ${chatAsyncImages.length} 张图片`)
+  } else {
+    bad('chat mixed-mode 显式异步响应结构异常', `status=${chatAsyncResp.status} code=${openaiCode(chatAsyncResp)} body=${JSON.stringify(chatAsyncResp.body)}`)
+  }
+
+  const responsesAsyncResp = await call('POST', '/v1/responses', { token: apiKey, body: {
+    model: MIXED_MODEL,
+    input: MIXED_PROMPT,
+    tools: [{ type: 'image_generation' }],
+    wait_for_result: false,
+    stream: false,
+  }})
+  if (shouldSkipMixedMode(responsesAsyncResp)) {
+    skip('responses mixed-mode 显式异步链路', `环境未满足:${openaiCode(responsesAsyncResp)} ${openaiMsg(responsesAsyncResp)}`)
+    await cleanup()
+    return
+  }
+  const responseAsyncImages = responsesAsyncResp.body?.images
+  const responseAsyncTask = responsesAsyncResp.body?.image_task
+  const hasAsyncImageCall = Array.isArray(responsesAsyncResp.body?.output) && responsesAsyncResp.body.output.some((x) => x?.type === 'image_generation_call')
+  if (responsesAsyncResp.status === 200 && responsesAsyncResp.body?.status === 'in_progress' && responseAsyncTask?.status === 'running' && hasAsyncImageCall) {
+    ok(`responses mixed-mode wait_for_result=false 已返回 in_progress image_task(task=${responseAsyncTask.task_id}, ready=${responseAsyncTask.ready_n ?? 0}/${responseAsyncTask.requested_n ?? '?'})`)
+  } else if (responsesAsyncResp.status === 200 && Array.isArray(responseAsyncImages) && responseAsyncImages.length > 0 && hasAsyncImageCall && responsesAsyncResp.body?.status === 'completed') {
+    ok(`responses mixed-mode wait_for_result=false 本轮已直接完成,返回 ${responseAsyncImages.length} 张图片`)
+  } else {
+    bad('responses mixed-mode 显式异步响应结构异常', `status=${responsesAsyncResp.status} code=${openaiCode(responsesAsyncResp)} body=${JSON.stringify(responsesAsyncResp.body)}`)
   }
 
   await cleanup()
