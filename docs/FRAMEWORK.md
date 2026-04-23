@@ -244,7 +244,7 @@ DispatchAccount(modelType) -> (Account, Unlock, err)
 - thinking 普通对话在 `chat.completions` 流式 chunk 中额外透出 `delta.reasoning`,非流式则透出 `choices[0].reasoning`
 - mixed-mode 成功时保留标准响应外壳,并在顶层追加 `images` 扩展数组;`/v1/responses` 的 `output` 会带 `message` + `image_generation_call`
 - mixed-mode 已支持 `stream=true`;`chat/completions` 末尾 chunk 可带顶层 `images`,`/v1/responses` 会发送 `response.created` / `response.reasoning.delta` / `response.output_text.delta` / `response.image_generation_call.completed` / `response.completed` / `response.failed`
-- thinking mixed-mode 若整轮未触发任何非空 reasoning,固定返回 `502 thinking_not_triggered`,不会把任务误记为 success
+- thinking mixed-mode 若整轮未检测到任何 thinking 信号,固定返回 `502 thinking_not_triggered`,不会把任务误记为 success
 - mixed-mode 若同轮对话未产图,固定返回 `upstream_image_not_returned`,不会自动降级到旧 `/v1/images/generations`
 
 ### 6.3 积分预扣与结算

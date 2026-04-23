@@ -69,3 +69,23 @@ func TestBuildFChatPayloadNativeThinking(t *testing.T) {
 		t.Fatalf("selected_sources = %#v, want empty", got)
 	}
 }
+
+func TestBuildFChatPayloadDefaultsToNativeThinkingWhenImageToolEnabled(t *testing.T) {
+	opt := FChatOpts{
+		UpstreamModel:   "gpt-5-4-thinking",
+		Messages:        []ChatMessage{{Role: "user", Content: "画三张连续故事图"}},
+		ParentMsgID:     "parent-1",
+		ThinkingEffort:  "standard",
+		EnableImageTool: true,
+	}
+
+	prep := buildFChatPreparePayload(opt)
+	if got := prep["system_hints"]; len(got.([]string)) != 0 {
+		t.Fatalf("prepare system_hints = %#v, want empty", got)
+	}
+
+	stream := buildFChatStreamPayload(opt)
+	if got := stream["system_hints"]; len(got.([]string)) != 0 {
+		t.Fatalf("stream system_hints = %#v, want empty", got)
+	}
+}

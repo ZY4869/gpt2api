@@ -178,6 +178,7 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 		refund(apiErr.Code, "chat image mixed refund")
 		return nil, apiErr
 	}
+	signals := res.thinkingSignals()
 
 	actualCost := billing.ComputeImageCost(imageModel, len(res.Images), ratio)
 	if err := h.Billing.Settle(context.Background(), ak.UserID, ak.ID, estimatedCost, actualCost, refID, "chat image mixed settle"); err != nil {
@@ -209,6 +210,12 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 			zap.String("strategy", strategy),
 			zap.String("conversation_id", res.ConversationID),
 			zap.Bool("partial_success", true),
+			zap.Bool("thinking_triggered", signals.Triggered),
+			zap.String("thinking_triggered_via", signals.TriggeredVia),
+			zap.Bool("saw_thought_patch", signals.SawThoughtPatch),
+			zap.Bool("saw_thinking_metadata", signals.SawThinkingMetadata),
+			zap.Bool("reasoning_empty", signals.ReasoningEmpty),
+			zap.Int("reasoning_len", signals.ReasoningLen),
 		)
 	}
 
@@ -226,8 +233,12 @@ func (h *Handler) executeMixedModeChatImageWithSink(
 		zap.Bool("partial_success", partialSuccess),
 		zap.Bool("is_preview", res.IsPreview),
 		zap.Bool("thinking_model", isThinkingModel(chatModel)),
-		zap.Bool("thinking_triggered", strings.TrimSpace(res.ReasoningText) != ""),
-		zap.Int("reasoning_len", len(strings.TrimSpace(res.ReasoningText))),
+		zap.Bool("thinking_triggered", signals.Triggered),
+		zap.String("thinking_triggered_via", signals.TriggeredVia),
+		zap.Bool("saw_thought_patch", signals.SawThoughtPatch),
+		zap.Bool("saw_thinking_metadata", signals.SawThinkingMetadata),
+		zap.Bool("reasoning_empty", signals.ReasoningEmpty),
+		zap.Int("reasoning_len", signals.ReasoningLen),
 	)
 	return res, nil
 }
@@ -358,12 +369,17 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 
 	finalState := collector.Result()
 	res := &mixedModeExecResult{
-		TaskID:         taskID,
-		AccountID:      lease.Account.ID,
-		ConversationID: finalState.ConversationID,
-		AssistantText:  finalState.AssistantText,
-		ReasoningText:  finalState.ReasoningText,
+		TaskID:               taskID,
+		AccountID:            lease.Account.ID,
+		ConversationID:       finalState.ConversationID,
+		AssistantText:        finalState.AssistantText,
+		ReasoningText:        finalState.ReasoningText,
+		ThinkingTriggered:    finalState.ThinkingTriggered,
+		ThinkingTriggeredVia: finalState.ThinkingTriggeredVia,
+		SawThoughtPatch:      finalState.SawThoughtPatch,
+		SawThinkingMetadata:  finalState.SawThinkingMetadata,
 	}
+	signals := res.thinkingSignals()
 
 	logger.L().Info("chat mixed image SSE parsed",
 		zap.String("task_id", taskID),
@@ -376,17 +392,21 @@ func (h *Handler) runMixedModeChatImageConversationCore(
 		zap.Int("sse_files", len(finalState.FileIDs)),
 		zap.Int("sse_sediments", len(finalState.SedimentIDs)),
 		zap.Bool("thinking_model", isThinkingModel(chatModel)),
-		zap.Bool("thinking_triggered", strings.TrimSpace(finalState.ReasoningText) != ""),
-		zap.Int("reasoning_len", len(strings.TrimSpace(finalState.ReasoningText))),
+		zap.Bool("thinking_triggered", signals.Triggered),
+		zap.String("thinking_triggered_via", signals.TriggeredVia),
+		zap.Bool("saw_thought_patch", signals.SawThoughtPatch),
+		zap.Bool("saw_thinking_metadata", signals.SawThinkingMetadata),
+		zap.Bool("reasoning_empty", signals.ReasoningEmpty),
+		zap.Int("reasoning_len", signals.ReasoningLen),
 		zap.Int("excluded_account_ids_count", len(excluded)),
 		zap.String("persona", cr.Persona),
 	)
 
-	if isThinkingModel(chatModel) && strings.TrimSpace(finalState.ReasoningText) == "" {
+	if isThinkingModel(chatModel) && !signals.Triggered {
 		return nil, &mixedModeAPIError{
 			Status:  http.StatusBadGateway,
 			Code:    "thinking_not_triggered",
-			Message: "thinking 模型本轮未触发思考过程,已判定生成失败,请重试",
+			Message: "thinking 模型本轮未检测到思考信号,已判定生成失败,请重试",
 		}
 	}
 

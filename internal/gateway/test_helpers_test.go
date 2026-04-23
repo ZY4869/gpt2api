@@ -52,7 +52,7 @@ func (s fakeSettings) GatewayChatImageMixedEnabled() bool {
 }
 func (s fakeSettings) GatewayChatImageThinkingStrategy() string {
 	if s.thinkingStrategy == "" {
-		return "picture_v2_thinking"
+		return "native_thinking"
 	}
 	return s.thinkingStrategy
 }

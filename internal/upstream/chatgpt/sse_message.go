@@ -6,16 +6,20 @@ import (
 )
 
 type StreamMessageUpdate struct {
-	AssistantDelta string
-	ReasoningDelta string
-	AssistantText  string
-	ReasoningText  string
-	ConversationID string
-	FileIDs        []string
-	SedimentIDs    []string
-	FinishType     string
-	ImageGenTaskID string
-	Final          bool
+	AssistantDelta       string
+	ReasoningDelta       string
+	AssistantText        string
+	ReasoningText        string
+	ThinkingTriggered    bool
+	ThinkingTriggeredVia string
+	SawThoughtPatch      bool
+	SawThinkingMetadata  bool
+	ConversationID       string
+	FileIDs              []string
+	SedimentIDs          []string
+	FinishType           string
+	ImageGenTaskID       string
+	Final                bool
 }
 
 type StreamMessageCollector struct {
@@ -54,29 +58,38 @@ func (c *StreamMessageCollector) Consume(data []byte) StreamMessageUpdate {
 
 	cur := c.Result()
 	return StreamMessageUpdate{
-		AssistantDelta: appendedDelta(prev.AssistantText, cur.AssistantText),
-		ReasoningDelta: appendedDelta(prev.ReasoningText, cur.ReasoningText),
-		AssistantText:  cur.AssistantText,
-		ReasoningText:  cur.ReasoningText,
-		ConversationID: cur.ConversationID,
-		FileIDs:        append([]string(nil), cur.FileIDs...),
-		SedimentIDs:    append([]string(nil), cur.SedimentIDs...),
-		FinishType:     cur.FinishType,
-		ImageGenTaskID: cur.ImageGenTaskID,
-		Final:          final,
+		AssistantDelta:       appendedDelta(prev.AssistantText, cur.AssistantText),
+		ReasoningDelta:       appendedDelta(prev.ReasoningText, cur.ReasoningText),
+		AssistantText:        cur.AssistantText,
+		ReasoningText:        cur.ReasoningText,
+		ThinkingTriggered:    cur.ThinkingTriggered,
+		ThinkingTriggeredVia: cur.ThinkingTriggeredVia,
+		SawThoughtPatch:      cur.SawThoughtPatch,
+		SawThinkingMetadata:  cur.SawThinkingMetadata,
+		ConversationID:       cur.ConversationID,
+		FileIDs:              append([]string(nil), cur.FileIDs...),
+		SedimentIDs:          append([]string(nil), cur.SedimentIDs...),
+		FinishType:           cur.FinishType,
+		ImageGenTaskID:       cur.ImageGenTaskID,
+		Final:                final,
 	}
 }
 
 func (c *StreamMessageCollector) Result() StreamMessageUpdate {
 	text := c.textCollector.Result()
+	reasoningText := sanitizeImageSSEText(text.ReasoningText)
 	return StreamMessageUpdate{
-		AssistantText:  sanitizeImageSSEText(text.AssistantText),
-		ReasoningText:  sanitizeImageSSEText(text.ReasoningText),
-		ConversationID: c.conversationID,
-		FileIDs:        append([]string(nil), c.fileIDs...),
-		SedimentIDs:    append([]string(nil), c.sedimentIDs...),
-		FinishType:     c.finishType,
-		ImageGenTaskID: c.imageGenTaskID,
+		AssistantText:        sanitizeImageSSEText(text.AssistantText),
+		ReasoningText:        reasoningText,
+		ThinkingTriggered:    thinkingTriggered(reasoningText, text.SawThoughtPatch, text.SawThinkingMetadata),
+		ThinkingTriggeredVia: thinkingTriggeredVia(reasoningText, text.SawThoughtPatch, text.SawThinkingMetadata),
+		SawThoughtPatch:      text.SawThoughtPatch,
+		SawThinkingMetadata:  text.SawThinkingMetadata,
+		ConversationID:       c.conversationID,
+		FileIDs:              append([]string(nil), c.fileIDs...),
+		SedimentIDs:          append([]string(nil), c.sedimentIDs...),
+		FinishType:           c.finishType,
+		ImageGenTaskID:       c.imageGenTaskID,
 	}
 }
 

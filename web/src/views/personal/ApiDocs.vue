@@ -404,7 +404,7 @@ onMounted(async () => {
               :closable="false"
               show-icon
               title="对话框生图首版说明"
-              description="chat/responses mixed-mode 仅在 image_generation=true 或 tools:[{type:'image_generation'}] 时触发,现已支持 stream=true。thinking chat chunk 会额外返回 delta.reasoning;/v1/responses 会发出 response.reasoning.delta、response.output_text.delta、response.image_generation_call.completed、response.completed/response.failed。thinking mixed-mode 若整轮没有触发思考,会返回 502 thinking_not_triggered。"
+              description="chat/responses mixed-mode 仅在 image_generation=true 或 tools:[{type:'image_generation'}] 时触发,现已支持 stream=true。thinking chat chunk 会额外返回 delta.reasoning;/v1/responses 会发出 response.reasoning.delta、response.output_text.delta、response.image_generation_call.completed、response.completed/response.failed。thinking mixed-mode 若整轮未检测到任何思考信号,会返回 502 thinking_not_triggered。"
               style="margin-top: 12px"
             />
 

@@ -252,7 +252,7 @@ func (s *Service) GatewayChatImageThinkingPollMaxWaitSec() int {
 func (s *Service) GatewayChatImageThinkingStrategy() string {
 	v := strings.TrimSpace(s.GetString(GatewayChatImageThinkingStrategy))
 	if v == "" {
-		return "picture_v2_thinking"
+		return "native_thinking"
 	}
 	return v
 }

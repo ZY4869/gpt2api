@@ -19,16 +19,20 @@ import (
 )
 
 type mixedModeExecResult struct {
-	TaskID         string
-	AccountID      uint64
-	ConversationID string
-	FileRefs       []string
-	SignedURLs     []string
-	ContentTypes   []string
-	Images         []MixedModeImage
-	IsPreview      bool
-	AssistantText  string
-	ReasoningText  string
+	TaskID               string
+	AccountID            uint64
+	ConversationID       string
+	FileRefs             []string
+	SignedURLs           []string
+	ContentTypes         []string
+	Images               []MixedModeImage
+	IsPreview            bool
+	AssistantText        string
+	ReasoningText        string
+	ThinkingTriggered    bool
+	ThinkingTriggeredVia string
+	SawThoughtPatch      bool
+	SawThinkingMetadata  bool
 }
 
 type mixedModeAPIError struct {
@@ -62,7 +66,7 @@ func (h *Handler) mixedModeImageStrategy(chatModel *modelpkg.Model) string {
 		return chatgpt.ImageStrategyPictureV2Thinking
 	}
 	if h.Settings == nil {
-		return chatgpt.ImageStrategyPictureV2Thinking
+		return chatgpt.ImageStrategyNativeThinking
 	}
 	return chatgpt.NormalizeImageStrategy(h.Settings.GatewayChatImageThinkingStrategy())
 }

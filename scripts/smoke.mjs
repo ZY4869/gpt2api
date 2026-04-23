@@ -477,8 +477,9 @@ async function checkMixedMode() {
       } else {
         bad('chat mixed-mode stream=true 校验失败', `late-error code=${code} msg=${sseMsg(body)}`)
       }
-    } else if (body.includes('data: [DONE]') && body.includes('"images"') && body.includes('"reasoning"')) {
-      ok('chat mixed-mode stream=true 返回 SSE reasoning,并在最终 chunk 附带 images')
+    } else if (body.includes('data: [DONE]') && body.includes('"images"')) {
+      if (body.includes('"reasoning"')) ok('chat mixed-mode stream=true 返回 SSE reasoning,并在最终 chunk 附带 images')
+      else ok('chat mixed-mode stream=true 已完成并返回最终 images(本轮可能没有可见 reasoning 文本)')
     } else {
       bad('chat mixed-mode stream=true 校验失败', `body=${body.slice(0, 500)}`)
     }
@@ -529,8 +530,9 @@ async function checkMixedMode() {
       } else {
         bad('responses mixed-mode stream=true 校验失败', `late-error code=${code} msg=${sseMsg(body)}`)
       }
-    } else if (hasOrderedResponsesStreamEvents(body) && body.includes('event: response.reasoning.delta') && body.includes('"type":"output_image"')) {
-      ok('responses mixed-mode stream=true 返回 reasoning 事件,并按 created -> delta -> image_generation_call.completed -> completed 顺序结束')
+    } else if (hasOrderedResponsesStreamEvents(body) && body.includes('"type":"output_image"') && body.includes('event: response.completed')) {
+      if (body.includes('event: response.reasoning.delta')) ok('responses mixed-mode stream=true 返回 reasoning 事件,并按 created -> delta -> image_generation_call.completed -> completed 顺序结束')
+      else ok('responses mixed-mode stream=true 未返回可见 reasoning 事件,但已按 created -> delta -> image_generation_call.completed -> completed 顺序结束')
     } else {
       bad('responses mixed-mode stream=true 校验失败', `events=${listSSEEventNames(body).join(' > ')} body=${body.slice(0, 600)}`)
     }

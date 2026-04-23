@@ -137,7 +137,7 @@ var Defs = []KeyDef{
 	{Key: GatewayChatImagePollMaxWaitSec, Type: "int", Category: "gateway", Default: "180", Label: "对话框生图轮询上限(秒)", Desc: "非 thinking mixed-mode 在 conversation 轮询图片结果的最长等待"},
 	{Key: GatewayChatImageThinkingRunTimeoutSec, Type: "int", Category: "gateway", Default: "600", Label: "思考生图总超时(秒)", Desc: "thinking mixed-mode 生图整轮执行的总超时"},
 	{Key: GatewayChatImageThinkingPollMaxWaitSec, Type: "int", Category: "gateway", Default: "300", Label: "思考生图轮询上限(秒)", Desc: "thinking mixed-mode 在 conversation 轮询图片结果的最长等待"},
-	{Key: GatewayChatImageThinkingStrategy, Type: "string", Category: "gateway", Default: "picture_v2_thinking", Label: "思考生图策略", Desc: "picture_v2_thinking=稳定模式; native_thinking=抓包实验模式"},
+	{Key: GatewayChatImageThinkingStrategy, Type: "string", Category: "gateway", Default: "native_thinking", Label: "思考生图策略", Desc: "native_thinking=默认/官方对齐; picture_v2_thinking=兼容回滚"},
 	{Key: GatewayChatImageMaxN, Type: "int", Category: "gateway", Default: "10", Label: "对话框生图最大张数", Desc: "mixed-mode 每次最多生成的图片数量(1~10)"},
 	{Key: GatewayCooldown429Sec, Type: "int", Category: "gateway", Default: "300", Label: "429 冷却(秒)", Desc: "账号遇 429 后暂停调度"},
 	{Key: GatewayWarnedPauseHours, Type: "int", Category: "gateway", Default: "24", Label: "风险暂停(小时)", Desc: "账号被识别为 warned 时的暂停时长"},

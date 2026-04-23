@@ -2,4 +2,4 @@ event: response.created
 data: {"created_at":1710806400,"id":"resp_resp_stream_failed","model":"gpt-5-thinking","object":"response","status":"in_progress"}
 
 event: response.failed
-data: {"error":{"code":"thinking_not_triggered","message":"thinking 模型本轮未触发思考过程,已判定生成失败,请重试","type":"invalid_request_error"},"type":"response.failed"}
+data: {"error":{"code":"thinking_not_triggered","message":"thinking 模型本轮未检测到思考信号,已判定生成失败,请重试","type":"invalid_request_error"},"type":"response.failed"}

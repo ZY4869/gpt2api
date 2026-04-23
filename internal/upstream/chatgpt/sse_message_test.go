@@ -42,4 +42,49 @@ func TestStreamMessageCollectorCapturesDeltasAndRefs(t *testing.T) {
 	if final.ReasoningText != wantFinalReasoning {
 		t.Fatalf("reasoning_text = %q, want %q", final.ReasoningText, wantFinalReasoning)
 	}
+	if !final.ThinkingTriggered {
+		t.Fatal("thinking_triggered = false, want true")
+	}
+	if final.ThinkingTriggeredVia != "reasoning_text" {
+		t.Fatalf("thinking_triggered_via = %q, want reasoning_text", final.ThinkingTriggeredVia)
+	}
+}
+
+func TestStreamMessageCollectorMarksThoughtPatchWithoutVisibleReasoning(t *testing.T) {
+	collector := NewStreamMessageCollector()
+
+	update := collector.Consume([]byte(`{"v":[{"p":"/message/content/thoughts/0/summary","o":"append","v":""}]}`))
+	if !update.ThinkingTriggered {
+		t.Fatal("thinking_triggered = false, want true")
+	}
+	if update.ThinkingTriggeredVia != "thought_patch" {
+		t.Fatalf("thinking_triggered_via = %q, want thought_patch", update.ThinkingTriggeredVia)
+	}
+	if !update.SawThoughtPatch {
+		t.Fatal("saw_thought_patch = false, want true")
+	}
+	if update.ReasoningText != "" {
+		t.Fatalf("reasoning_text = %q, want empty", update.ReasoningText)
+	}
+}
+
+func TestStreamMessageCollectorMarksThinkingMetadataWithoutVisibleReasoning(t *testing.T) {
+	collector := NewStreamMessageCollector()
+
+	update := collector.Consume([]byte(`{"message":{"metadata":{"ghostrider_status":"running","reasoning_start_time":"1710806400"}}}`))
+	if !update.ThinkingTriggered {
+		t.Fatal("thinking_triggered = false, want true")
+	}
+	if update.ThinkingTriggeredVia != "metadata" {
+		t.Fatalf("thinking_triggered_via = %q, want metadata", update.ThinkingTriggeredVia)
+	}
+	if update.SawThoughtPatch {
+		t.Fatal("saw_thought_patch = true, want false")
+	}
+	if !update.SawThinkingMetadata {
+		t.Fatal("saw_thinking_metadata = false, want true")
+	}
+	if update.ReasoningText != "" {
+		t.Fatalf("reasoning_text = %q, want empty", update.ReasoningText)
+	}
 }

@@ -457,7 +457,7 @@ event: response.completed
 - `chat/completions stream=true` 已支持实时 `delta.reasoning` 与 `delta.content`; mixed-mode 结束 chunk 会在顶层附带 `images`,晚到失败会发送 `event: error`
 - `/v1/responses stream=true` 会发送 `response.created`、`response.reasoning.delta`、`response.output_text.delta`、`response.image_generation_call.completed`、`response.completed`、`response.failed`
 - thinking 普通对话非流式会返回 `choices[0].reasoning`; mixed-mode 成功时也会把 reasoning 聚合到文本返回里,便于前端展示
-- thinking mixed-mode 若整轮没有收到任何非空 reasoning,即使拿到图片引用也会严格失败为 `502 thinking_not_triggered`,并退款 / 标记任务失败
+- thinking mixed-mode 若整轮未检测到任何 thinking 信号,即使拿到图片引用也会严格失败为 `502 thinking_not_triggered`,并退款 / 标记任务失败
 - 如果上游同轮对话没有真的产图,服务端会严格返回 `upstream_image_not_returned`,不会自动降级到旧 `/v1/images/generations`
 - mixed-mode 仍保留对话模型语义,对外 `model` 不变,内部只用默认图片模型配置做计费和 `image_tasks` 落库映射
 - thinking mixed-mode 默认使用更长的执行/轮询超时,并可通过 `gateway.chat_image_run_timeout_sec`、`gateway.chat_image_poll_max_wait_sec`、`gateway.chat_image_thinking_run_timeout_sec`、`gateway.chat_image_thinking_poll_max_wait_sec` 单独调优

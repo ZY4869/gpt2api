@@ -12,6 +12,9 @@ const (
 	defaultMixedModePollMaxWait        = 180 * time.Second
 	defaultThinkingMixedModeRunTimeout = 10 * time.Minute
 	defaultThinkingMixedModePollWait   = 300 * time.Second
+	mixedModeThinkingViaReasoningText  = "reasoning_text"
+	mixedModeThinkingViaThoughtPatch   = "thought_patch"
+	mixedModeThinkingViaMetadata       = "metadata"
 )
 
 func (r *mixedModeExecResult) responseText() string {
@@ -35,6 +38,39 @@ func (r *mixedModeExecResult) responseText() string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+type mixedModeThinkingSignals struct {
+	Triggered           bool
+	TriggeredVia        string
+	SawThoughtPatch     bool
+	SawThinkingMetadata bool
+	ReasoningEmpty      bool
+	ReasoningLen        int
+}
+
+func (r *mixedModeExecResult) thinkingSignals() mixedModeThinkingSignals {
+	reasoning := strings.TrimSpace(r.ReasoningText)
+	triggered := reasoning != "" || r.ThinkingTriggered || r.SawThoughtPatch || r.SawThinkingMetadata
+	triggeredVia := strings.TrimSpace(r.ThinkingTriggeredVia)
+	if triggeredVia == "" {
+		switch {
+		case reasoning != "":
+			triggeredVia = mixedModeThinkingViaReasoningText
+		case r.SawThoughtPatch:
+			triggeredVia = mixedModeThinkingViaThoughtPatch
+		case r.SawThinkingMetadata:
+			triggeredVia = mixedModeThinkingViaMetadata
+		}
+	}
+	return mixedModeThinkingSignals{
+		Triggered:           triggered,
+		TriggeredVia:        triggeredVia,
+		SawThoughtPatch:     r.SawThoughtPatch,
+		SawThinkingMetadata: r.SawThinkingMetadata,
+		ReasoningEmpty:      reasoning == "",
+		ReasoningLen:        len(reasoning),
+	}
 }
 
 func (h *Handler) mixedModeRunTimeout(chatModel *modelpkg.Model) time.Duration {

@@ -8,8 +8,10 @@ import (
 )
 
 type sseTextResult struct {
-	AssistantText string
-	ReasoningText string
+	AssistantText       string
+	ReasoningText       string
+	SawThoughtPatch     bool
+	SawThinkingMetadata bool
 }
 
 type sseTextCollector struct {
@@ -18,6 +20,7 @@ type sseTextCollector struct {
 	assistant     strings.Builder
 	thoughtParts  map[string]*strings.Builder
 	lastAssistant string
+	signals       thinkingSignalState
 }
 
 func newSSETextCollector() *sseTextCollector {
@@ -36,6 +39,7 @@ func (c *sseTextCollector) Consume(data []byte) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return
 	}
+	c.signals.observeThinkingMetadata(raw)
 
 	if p, ok := raw["p"].(string); ok {
 		c.curP = p
@@ -51,12 +55,17 @@ func (c *sseTextCollector) Consume(data []byte) {
 
 func (c *sseTextCollector) Result() sseTextResult {
 	return sseTextResult{
-		AssistantText: strings.TrimSpace(c.assistant.String()),
-		ReasoningText: strings.TrimSpace(c.joinThoughtParts()),
+		AssistantText:       strings.TrimSpace(c.assistant.String()),
+		ReasoningText:       strings.TrimSpace(c.joinThoughtParts()),
+		SawThoughtPatch:     c.signals.sawThoughtPatch,
+		SawThinkingMetadata: c.signals.sawThinkingMetadata,
 	}
 }
 
 func (c *sseTextCollector) consumeValue(path string, v interface{}) {
+	if strings.HasPrefix(path, "/message/content/thoughts") {
+		c.signals.markThoughtPatch()
+	}
 	switch x := v.(type) {
 	case string:
 		c.consumeString(path, x, "")
@@ -70,6 +79,9 @@ func (c *sseTextCollector) consumeValue(path string, v interface{}) {
 			if p, ok := patch["p"].(string); ok && p != "" {
 				subPath = p
 				c.curP = p
+			}
+			if strings.HasPrefix(subPath, "/message/content/thoughts") {
+				c.signals.markThoughtPatch()
 			}
 			if subPath == "/message/recipient" {
 				if s, ok := patch["v"].(string); ok && s != "" {
@@ -88,6 +100,9 @@ func (c *sseTextCollector) consumeValue(path string, v interface{}) {
 }
 
 func (c *sseTextCollector) consumeValueWithOp(path string, v interface{}, op string) {
+	if strings.HasPrefix(path, "/message/content/thoughts") {
+		c.signals.markThoughtPatch()
+	}
 	switch x := v.(type) {
 	case string:
 		c.consumeString(path, x, op)
@@ -103,18 +118,24 @@ func (c *sseTextCollector) consumeValueWithOp(path string, v interface{}, op str
 }
 
 func (c *sseTextCollector) consumeString(path, text, op string) {
-	if text == "" {
-		return
-	}
 	if path == "/message/recipient" {
-		c.recipient = text
+		if text != "" {
+			c.recipient = text
+		}
 		return
 	}
 	if path == "/message/status" {
 		return
 	}
 	if strings.HasPrefix(path, "/message/content/thoughts") {
+		c.signals.markThoughtPatch()
+		if strings.TrimSpace(text) == "" {
+			return
+		}
 		c.appendThought(path, text, op)
+		return
+	}
+	if text == "" {
 		return
 	}
 	if c.recipient != "all" {
@@ -143,11 +164,15 @@ func (c *sseTextCollector) consumeMessage(msg map[string]interface{}) {
 		}
 	}
 	if thoughts, ok := content["thoughts"]; ok {
+		c.signals.markThoughtPatch()
 		c.consumeThoughtValue("/message/content/thoughts", thoughts)
 	}
 }
 
 func (c *sseTextCollector) consumeThoughtValue(path string, v interface{}) {
+	if strings.HasPrefix(path, "/message/content/thoughts") {
+		c.signals.markThoughtPatch()
+	}
 	switch x := v.(type) {
 	case string:
 		c.appendThought(path, x, "replace")
