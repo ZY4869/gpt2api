@@ -6,7 +6,7 @@
   "scripts": {
     "dev:user": "pnpm --filter @kleinai/user dev",
     "dev:admin": "pnpm --filter @kleinai/admin dev",
-    "build": "pnpm -r --filter ./apps/* build",
+    "build": "pnpm --filter @kleinai/user build && pnpm --filter @kleinai/admin build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
     "format": "prettier --write \"**/*.{ts,tsx,css,md,json}\""
