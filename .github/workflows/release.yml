@@ -68,13 +68,13 @@ jobs:
                 -o "../${BIN_DIR}/${APP}" "./cmd/${APP}"
             done
 
-            TOOLS_GOPATH="$PWD/../release/gopath-${ARCH}"
-            rm -rf "${TOOLS_GOPATH}"
+            TOOLS_GOPATH="$(mktemp -d)"
             GOPATH="${TOOLS_GOPATH}" GOOS=linux GOARCH="${ARCH}" CGO_ENABLED=0 \
               go install github.com/pressly/goose/v3/cmd/goose@v3.24.3
             GOOSE_BIN="$(find "${TOOLS_GOPATH}/bin" -type f -name goose | head -n 1)"
             test -n "${GOOSE_BIN}"
             cp "${GOOSE_BIN}" "../${BIN_DIR}/goose"
+            chmod -R u+w "${TOOLS_GOPATH}" || true
             rm -rf "${TOOLS_GOPATH}"
             popd >/dev/null
 
