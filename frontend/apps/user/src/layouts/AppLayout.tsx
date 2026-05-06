@@ -29,7 +29,7 @@ interface NavItem {
   authed?: boolean;
 }
 
-const APP_VERSION = 'v2.0.1';
+const APP_VERSION = 'v0.5.6';
 
 const NAV_ITEMS: NavItem[] = [
   { to: '/create/image', label: '图片', icon: Image },

@@ -4,6 +4,15 @@
 
 ---
 
+## v0.5.6 — 2026-05-06
+
+### 发布与稳定性
+
+- 修复 fork 新架构发布流水线：补齐适配 `backend/ + frontend/` 目录结构的 `Release Build`
+- 修复 provider 瞬态网络错误重试：`EOF`、`connection reset`、`broken pipe`、`connection refused` 现在会被当作可重试错误处理
+
+---
+
 ## v2.0.1 — 2026-05-04
 
 ### 视频生成
