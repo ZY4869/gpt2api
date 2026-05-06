@@ -72,7 +72,9 @@ jobs:
             rm -rf "${TOOLS_GOPATH}"
             GOPATH="${TOOLS_GOPATH}" GOOS=linux GOARCH="${ARCH}" CGO_ENABLED=0 \
               go install github.com/pressly/goose/v3/cmd/goose@v3.24.3
-            cp "${TOOLS_GOPATH}/bin/linux_${ARCH}/goose" "../${BIN_DIR}/goose"
+            GOOSE_BIN="$(find "${TOOLS_GOPATH}/bin" -type f -name goose | head -n 1)"
+            test -n "${GOOSE_BIN}"
+            cp "${GOOSE_BIN}" "../${BIN_DIR}/goose"
             rm -rf "${TOOLS_GOPATH}"
             popd >/dev/null
 
