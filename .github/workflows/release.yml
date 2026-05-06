@@ -68,8 +68,12 @@ jobs:
                 -o "../${BIN_DIR}/${APP}" "./cmd/${APP}"
             done
 
-            GOBIN="$PWD/../${BIN_DIR}" GOOS=linux GOARCH="${ARCH}" CGO_ENABLED=0 \
+            TOOLS_GOPATH="$PWD/../release/gopath-${ARCH}"
+            rm -rf "${TOOLS_GOPATH}"
+            GOPATH="${TOOLS_GOPATH}" GOOS=linux GOARCH="${ARCH}" CGO_ENABLED=0 \
               go install github.com/pressly/goose/v3/cmd/goose@v3.24.3
+            cp "${TOOLS_GOPATH}/bin/linux_${ARCH}/goose" "../${BIN_DIR}/goose"
+            rm -rf "${TOOLS_GOPATH}"
             popd >/dev/null
 
             cp -R backend/configs/. "${OUT_DIR}/configs/"

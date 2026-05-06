@@ -1,0 +1,53 @@
+name: Upstream Watch
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - integration/upstream-v2-port
+  schedule:
+    - cron: '23 2 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream and tracked branch
+        run: |
+          git remote add upstream https://github.com/432539/gpt2api.git
+          git fetch --no-tags upstream main
+          git fetch --no-tags origin integration/upstream-v2-port
+
+      - name: Compare upstream status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          read -r BEHIND AHEAD < <(git rev-list --left-right --count upstream/main...origin/integration/upstream-v2-port)
+          UPSTREAM_SHA="$(git rev-parse upstream/main)"
+          BRANCH_SHA="$(git rev-parse origin/integration/upstream-v2-port)"
+
+          {
+            echo "## Upstream Watch"
+            echo
+            echo "- Tracked branch: \`origin/integration/upstream-v2-port\`"
+            echo "- Upstream branch: \`upstream/main\`"
+            echo "- Behind: \`${BEHIND}\`"
+            echo "- Ahead: \`${AHEAD}\`"
+            echo "- Upstream SHA: \`${UPSTREAM_SHA}\`"
+            echo "- Tracked SHA: \`${BRANCH_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${BEHIND}" -gt 0 ]; then
+            echo "integration/upstream-v2-port is ${BEHIND} commits behind upstream/main"
+            exit 1
+          fi
