@@ -1,0 +1,104 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release-assets:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Run backend tests
+        working-directory: backend
+        run: go test ./...
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Build frontend apps
+        working-directory: frontend
+        run: pnpm build
+
+      - name: Build release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME}"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          PKG="github.com/kleinai/backend/pkg/version"
+
+          mkdir -p release/assets release/backend
+
+          for ARCH in amd64 arm64; do
+            OUT_DIR="release/backend/linux-${ARCH}"
+            BIN_DIR="${OUT_DIR}/bin"
+            mkdir -p "${BIN_DIR}" "${OUT_DIR}/configs" "${OUT_DIR}/migrations"
+
+            pushd backend >/dev/null
+            for APP in api admin openai worker; do
+              GOOS=linux GOARCH="${ARCH}" CGO_ENABLED=0 \
+                go build -trimpath \
+                -ldflags="-s -w -X ${PKG}.Build=${TAG} -X ${PKG}.Time=${BUILD_TIME}" \
+                -o "../${BIN_DIR}/${APP}" "./cmd/${APP}"
+            done
+
+            GOBIN="$PWD/../${BIN_DIR}" GOOS=linux GOARCH="${ARCH}" CGO_ENABLED=0 \
+              go install github.com/pressly/goose/v3/cmd/goose@v3.24.3
+            popd >/dev/null
+
+            cp -R backend/configs/. "${OUT_DIR}/configs/"
+            cp -R backend/migrations/. "${OUT_DIR}/migrations/"
+
+            tar -czf "release/assets/kleinai-backend-linux-${ARCH}-${TAG}.tar.gz" -C "${OUT_DIR}" .
+          done
+
+          tar -czf "release/assets/kleinai-user-web-dist-${TAG}.tar.gz" -C frontend/apps/user dist
+          tar -czf "release/assets/kleinai-admin-web-dist-${TAG}.tar.gz" -C frontend/apps/admin dist
+          tar -czf "release/assets/kleinai-deploy-${TAG}.tar.gz" deploy
+
+          pushd release/assets >/dev/null
+          sha256sum ./* > SHA256SUMS.txt
+          popd >/dev/null
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kleinai-release-${{ github.ref_name }}
+          path: release/assets/*
+          if-no-files-found: error
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/assets/*

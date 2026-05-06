@@ -20,3 +20,24 @@ func TestProviderCooldownRetryable429StillCooldowns(t *testing.T) {
 		t.Fatalf("expected 429 cooldown >= 30m, got %s", got)
 	}
 }
+
+func TestRetryableProviderErrorTreatsTransientNetworkAsRetryable(t *testing.T) {
+	cases := []error{
+		errors.New("unexpected EOF"),
+		errors.New("read tcp 127.0.0.1:1234->127.0.0.1:443: connection reset by peer"),
+		errors.New("write tcp 127.0.0.1:1234->127.0.0.1:443: broken pipe"),
+		errors.New("dial tcp 127.0.0.1:443: connectex: connection refused"),
+	}
+	for _, err := range cases {
+		if !retryableProviderError(err) {
+			t.Fatalf("expected transient network error to be retryable: %v", err)
+		}
+	}
+}
+
+func TestIsTransientProviderPathErrorTreatsTransientNetworkAsTransient(t *testing.T) {
+	err := errors.New("read tcp 127.0.0.1:1234->127.0.0.1:443: connection reset by peer")
+	if !isTransientProviderPathError("", err) {
+		t.Fatalf("expected network reset to be treated as transient path error")
+	}
+}

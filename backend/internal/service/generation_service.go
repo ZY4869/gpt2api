@@ -1239,15 +1239,35 @@ func retryableProviderError(err error) bool {
 		isUsageLimitReachedError(err) ||
 		strings.Contains(msg, "http 429") ||
 		strings.Contains(msg, "too many requests") ||
+		isTransientProviderNetworkError(msg) ||
 		isGrokRetryableForbiddenError(msg)
 }
 
 func isTransientProviderPathError(provider string, err error) bool {
-	if err == nil || provider != model.ProviderGROK {
+	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+	if isTransientProviderNetworkError(msg) {
+		return true
+	}
+	if provider != model.ProviderGROK {
+		return false
+	}
 	return strings.Contains(msg, "http 403") && isGrokRetryableForbiddenError(msg)
+}
+
+func isTransientProviderNetworkError(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	return strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, " eof") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "read: connection reset") ||
+		strings.Contains(msg, "write: broken pipe")
 }
 
 func isGrokRetryableForbiddenError(msg string) bool {
