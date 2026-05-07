@@ -43,9 +43,12 @@ services:
       - ./mysql-init/01-run-migrations.sh:/docker-entrypoint-initdb.d/01-run-migrations.sh:ro
       - ../backend/migrations:/migrations:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$$MYSQL_ROOT_PASSWORD"]
+      # 用 CMD-SHELL 才能在容器内展开 MYSQL_ROOT_PASSWORD。
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\""]
       interval: 10s
-      retries: 6
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks: [klein]
 
   redis:
