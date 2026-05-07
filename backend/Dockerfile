@@ -1,7 +1,9 @@
 # ----- 多阶段构建：构建 4 个独立二进制并打入同一镜像 -----
 FROM golang:1.24-alpine AS builder
 
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+ARG TARGETOS=linux
+ARG TARGETARCH
+ENV CGO_ENABLED=0
 
 WORKDIR /src
 
@@ -15,17 +17,17 @@ COPY . .
 ARG VERSION=dev
 ARG BUILD_TIME=unknown
 
-RUN go build -trimpath -ldflags="-s -w \
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w \
         -X github.com/kleinai/backend/pkg/version.Build=${VERSION} \
         -X github.com/kleinai/backend/pkg/version.Time=${BUILD_TIME}" \
     -o /out/api    ./cmd/api  && \
-    go build -trimpath -ldflags="-s -w \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w \
         -X github.com/kleinai/backend/pkg/version.Build=${VERSION}" \
     -o /out/admin  ./cmd/admin && \
-    go build -trimpath -ldflags="-s -w \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w \
         -X github.com/kleinai/backend/pkg/version.Build=${VERSION}" \
     -o /out/openai ./cmd/openai && \
-    go build -trimpath -ldflags="-s -w \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w \
         -X github.com/kleinai/backend/pkg/version.Build=${VERSION}" \
     -o /out/worker ./cmd/worker
 

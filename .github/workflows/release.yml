@@ -55,7 +55,7 @@ jobs:
 
           mkdir -p release/assets release/backend
 
-          for ARCH in amd64 arm64; do
+          for ARCH in arm64; do
             OUT_DIR="release/backend/linux-${ARCH}"
             BIN_DIR="${OUT_DIR}/bin"
             mkdir -p "${BIN_DIR}" "${OUT_DIR}/configs" "${OUT_DIR}/migrations"

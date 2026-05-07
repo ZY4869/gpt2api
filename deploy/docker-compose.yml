@@ -73,7 +73,7 @@ services:
       dockerfile: Dockerfile
     container_name: klein-api
     restart: always
-    command: ["/app/api"]
+    entrypoint: ["/app/api"]
     environment:
       <<: *common-env
       KLEIN_NODE_ID: 1
@@ -96,7 +96,7 @@ services:
     image: kleinai/backend:latest
     container_name: klein-admin
     restart: always
-    command: ["/app/admin"]
+    entrypoint: ["/app/admin"]
     environment:
       <<: *common-env
       KLEIN_NODE_ID: 2
@@ -115,7 +115,7 @@ services:
     image: kleinai/backend:latest
     container_name: klein-openai
     restart: always
-    command: ["/app/openai"]
+    entrypoint: ["/app/openai"]
     environment:
       <<: *common-env
       KLEIN_NODE_ID: 3
@@ -134,7 +134,7 @@ services:
     image: kleinai/backend:latest
     container_name: klein-worker
     restart: always
-    command: ["/app/worker"]
+    entrypoint: ["/app/worker"]
     environment:
       <<: *common-env
       KLEIN_NODE_ID: 4
