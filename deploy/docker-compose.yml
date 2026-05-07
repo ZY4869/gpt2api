@@ -80,6 +80,7 @@ services:
     expose: ["17180"]
     volumes:
       - klein-logs:/app/logs
+      - klein-storage:/app/storage/public
     depends_on:
       mysql:  { condition: service_healthy }
       redis:  { condition: service_healthy }
@@ -103,6 +104,7 @@ services:
     expose: ["17188"]
     volumes:
       - klein-logs:/app/logs
+      - klein-storage:/app/storage/public
     depends_on:
       mysql:  { condition: service_healthy }
       redis:  { condition: service_healthy }
@@ -122,6 +124,7 @@ services:
     expose: ["17200"]
     volumes:
       - klein-logs:/app/logs
+      - klein-storage:/app/storage/public
     depends_on:
       mysql:  { condition: service_healthy }
       redis:  { condition: service_healthy }
@@ -140,6 +143,7 @@ services:
       KLEIN_NODE_ID: 4
     volumes:
       - klein-logs:/app/logs
+      - klein-storage:/app/storage/public
     depends_on:
       mysql:  { condition: service_healthy }
       redis:  { condition: service_healthy }
@@ -187,6 +191,7 @@ volumes:
   klein-mysql-data:
   klein-redis-data:
   klein-logs:
+  klein-storage:
 
 networks:
   klein:

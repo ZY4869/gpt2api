@@ -54,6 +54,7 @@ func MountOpenAI(r *gin.Engine, deps *bootstrap.Deps) {
 	genSvc := service.NewGenerationService(deps.DB, genRepo, pool, billingSvc, providers, service.ConfigPriceFn(sysCfgSvc), deps.AES, proxySvc, sysCfgSvc)
 	chatSvc := service.NewChatService(deps.DB, genRepo, pool, billingSvc, sysCfgSvc, deps.AES, proxySvc)
 	openaiH := handler.NewOpenAIHandler(genSvc, chatSvc, genRepo)
+	v1.GET("/files/:task_id/:seq", openaiH.FileProxy)
 
 	guard := v1.Group("/")
 	guard.Use(middleware.AuthAPIKey(keySvc))

@@ -2,8 +2,11 @@
 package handler
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -125,6 +128,25 @@ func (h *OpenAIHandler) ImageEdits(c *gin.Context) {
 	h.createImage(c, true)
 }
 
+// FileProxy GET /v1/files/:task_id/:seq serves cached image results for OpenAI-compatible clients.
+func (h *OpenAIHandler) FileProxy(c *gin.Context) {
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	seq, err := strconv.Atoi(strings.TrimSpace(c.Param("seq")))
+	if taskID == "" || err != nil || seq < 0 {
+		jsonError(c, http.StatusBadRequest, "invalid_request_error", "invalid file path")
+		return
+	}
+	t, result, ok := h.loadTaskResult(c, taskID, provider.KindImage)
+	if !ok {
+		return
+	}
+	if seq >= len(result) {
+		jsonError(c, http.StatusNotFound, "not_found", "file not found")
+		return
+	}
+	h.serveImageAsset(c, t, result[seq], seq)
+}
+
 func (h *OpenAIHandler) createImage(c *gin.Context, edit bool) {
 	if !middleware.APIKeyScopeAllow(c, "image") {
 		jsonError(c, http.StatusForbidden, "scope_not_allowed", "current api key does not allow image generation")
@@ -182,7 +204,7 @@ func (h *OpenAIHandler) createImage(c *gin.Context, edit bool) {
 		return
 	}
 	if req.Async {
-		c.JSON(http.StatusOK, taskEnvelope(t, nil))
+		c.JSON(http.StatusOK, taskEnvelope(c, t, nil))
 		return
 	}
 	h.respondTaskResult(c, t, 60*time.Second)
@@ -281,7 +303,7 @@ func (h *OpenAIHandler) VideoGenerations(c *gin.Context) {
 		async = *req.Async
 	}
 	if async {
-		c.JSON(http.StatusOK, taskEnvelope(t, nil))
+		c.JSON(http.StatusOK, taskEnvelope(c, t, nil))
 		return
 	}
 	h.respondTaskResult(c, t, 10*time.Minute)
@@ -299,18 +321,11 @@ func (h *OpenAIHandler) GetVideoTask(c *gin.Context) {
 
 func (h *OpenAIHandler) getTask(c *gin.Context, kind provider.Kind) {
 	taskID := strings.TrimSpace(c.Param("task_id"))
-	t, err := h.repo.GetByTaskID(c.Request.Context(), taskID)
-	if err != nil {
-		jsonError(c, http.StatusNotFound, "not_found", "task not found")
+	t, results, ok := h.authorizeTaskResult(c, taskID, kind)
+	if !ok {
 		return
 	}
-	k := middleware.APIKeyFromCtx(c)
-	if k == nil || t.UserID != k.UserID || t.Kind != string(kind) {
-		jsonError(c, http.StatusNotFound, "not_found", "task not found")
-		return
-	}
-	results, _ := h.repo.ListResultsByTask(c.Request.Context(), t.TaskID)
-	c.JSON(http.StatusOK, taskEnvelope(t, results))
+	c.JSON(http.StatusOK, taskEnvelope(c, t, results))
 }
 
 func (h *OpenAIHandler) createTask(c *gin.Context, req service.CreateRequest) (*model.GenerationTask, bool) {
@@ -334,7 +349,7 @@ func (h *OpenAIHandler) createTask(c *gin.Context, req service.CreateRequest) (*
 func (h *OpenAIHandler) respondTaskResult(c *gin.Context, t *model.GenerationTask, timeout time.Duration) {
 	fresh, results := h.waitTask(c, t.TaskID, timeout)
 	if fresh == nil {
-		c.JSON(http.StatusAccepted, taskEnvelope(t, nil))
+		c.JSON(http.StatusAccepted, taskEnvelope(c, t, nil))
 		return
 	}
 	if fresh.Status == model.GenStatusFailed || fresh.Status == model.GenStatusRefunded {
@@ -346,10 +361,10 @@ func (h *OpenAIHandler) respondTaskResult(c *gin.Context, t *model.GenerationTas
 		return
 	}
 	if fresh.Kind == string(provider.KindVideo) {
-		c.JSON(http.StatusOK, videoResultEnvelope(fresh, results))
+		c.JSON(http.StatusOK, videoResultEnvelope(c, fresh, results))
 		return
 	}
-	c.JSON(http.StatusOK, imageResultEnvelope(fresh, results))
+	c.JSON(http.StatusOK, imageResultEnvelope(c, fresh, results))
 }
 
 func (h *OpenAIHandler) waitTask(c *gin.Context, taskID string, timeout time.Duration) (*model.GenerationTask, []*model.GenerationResult) {
@@ -404,10 +419,11 @@ func bindImageReq(c *gin.Context) (*imageReq, error) {
 	return &req, nil
 }
 
-func imageResultEnvelope(t *model.GenerationTask, results []*model.GenerationResult) gin.H {
+func imageResultEnvelope(c *gin.Context, t *model.GenerationTask, results []*model.GenerationResult) gin.H {
 	data := make([]gin.H, 0, len(results))
-	for _, r := range results {
-		row := gin.H{"url": normalizeOpenAIResultURL(r.URL)}
+	baseURL := openAIResultBaseURL(c)
+	for i, r := range results {
+		row := gin.H{"url": normalizeOpenAIResultURL(baseURL, t, r, i, false)}
 		if r.Width != nil {
 			row["width"] = *r.Width
 		}
@@ -424,12 +440,13 @@ func imageResultEnvelope(t *model.GenerationTask, results []*model.GenerationRes
 	}
 }
 
-func videoResultEnvelope(t *model.GenerationTask, results []*model.GenerationResult) gin.H {
+func videoResultEnvelope(c *gin.Context, t *model.GenerationTask, results []*model.GenerationResult) gin.H {
 	data := make([]gin.H, 0, len(results))
-	for _, r := range results {
-		row := gin.H{"url": normalizeOpenAIResultURL(r.URL)}
+	baseURL := openAIResultBaseURL(c)
+	for i, r := range results {
+		row := gin.H{"url": normalizeOpenAIResultURL(baseURL, t, r, i, false)}
 		if r.ThumbURL != nil {
-			row["cover_url"] = normalizeOpenAIResultURL(*r.ThumbURL)
+			row["cover_url"] = normalizeOpenAIResultURL(baseURL, t, r, i, true)
 		}
 		if r.DurationMs != nil {
 			row["duration_ms"] = *r.DurationMs
@@ -452,7 +469,7 @@ func videoResultEnvelope(t *model.GenerationTask, results []*model.GenerationRes
 	}
 }
 
-func taskEnvelope(t *model.GenerationTask, results []*model.GenerationResult) gin.H {
+func taskEnvelope(c *gin.Context, t *model.GenerationTask, results []*model.GenerationResult) gin.H {
 	out := gin.H{
 		"id":       t.TaskID,
 		"task_id":  t.TaskID,
@@ -471,16 +488,35 @@ func taskEnvelope(t *model.GenerationTask, results []*model.GenerationResult) gi
 	}
 	if len(results) > 0 {
 		if t.Kind == string(provider.KindVideo) {
-			out["result"] = videoResultEnvelope(t, results)
+			out["result"] = videoResultEnvelope(c, t, results)
 		} else {
-			out["result"] = imageResultEnvelope(t, results)
+			out["result"] = imageResultEnvelope(c, t, results)
 		}
 	}
 	return out
 }
 
-func normalizeOpenAIResultURL(v string) string {
-	v = strings.TrimSpace(v)
+func normalizeOpenAIResultURL(baseURL string, t *model.GenerationTask, r *model.GenerationResult, seq int, thumb bool) string {
+	if t != nil && t.Kind == string(provider.KindImage) {
+		raw := strings.TrimSpace(r.URL)
+		if thumb && r.ThumbURL != nil && *r.ThumbURL != "" {
+			raw = strings.TrimSpace(*r.ThumbURL)
+		}
+		if raw != "" && (strings.HasPrefix(raw, "/api/v1/gen/cached/") || strings.HasPrefix(raw, "data:")) {
+			u := fmt.Sprintf("/v1/files/%s/%d", t.TaskID, seq)
+			if thumb {
+				u += "?thumb=1"
+			}
+			if baseURL != "" {
+				return baseURL + u
+			}
+			return u
+		}
+	}
+	v := strings.TrimSpace(r.URL)
+	if thumb && r.ThumbURL != nil && *r.ThumbURL != "" {
+		v = strings.TrimSpace(*r.ThumbURL)
+	}
 	if v == "" || strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") || strings.HasPrefix(v, "data:") || strings.HasPrefix(v, "/api/") {
 		return v
 	}
@@ -564,6 +600,127 @@ func parseBool(v string) bool {
 	default:
 		return false
 	}
+}
+
+func openAIResultBaseURL(c *gin.Context) string {
+	if c == nil || c.Request == nil || c.Request.Host == "" {
+		return ""
+	}
+	scheme := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto"))
+	if scheme == "" {
+		if c.Request.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	return scheme + "://" + c.Request.Host
+}
+
+func (h *OpenAIHandler) authorizeTaskResult(c *gin.Context, taskID string, kind provider.Kind) (*model.GenerationTask, []*model.GenerationResult, bool) {
+	t, results, ok := h.loadTaskResult(c, taskID, kind)
+	if !ok {
+		return nil, nil, false
+	}
+	k := middleware.APIKeyFromCtx(c)
+	if k == nil || t.UserID != k.UserID {
+		jsonError(c, http.StatusNotFound, "not_found", "task not found")
+		return nil, nil, false
+	}
+	return t, results, true
+}
+
+func (h *OpenAIHandler) loadTaskResult(c *gin.Context, taskID string, kind provider.Kind) (*model.GenerationTask, []*model.GenerationResult, bool) {
+	t, err := h.repo.GetByTaskID(c.Request.Context(), taskID)
+	if err != nil {
+		jsonError(c, http.StatusNotFound, "not_found", "task not found")
+		return nil, nil, false
+	}
+	if t.Kind != string(kind) {
+		jsonError(c, http.StatusNotFound, "not_found", "task not found")
+		return nil, nil, false
+	}
+	results, _ := h.repo.ListResultsByTask(c.Request.Context(), t.TaskID)
+	return t, results, true
+}
+
+func (h *OpenAIHandler) serveImageAsset(c *gin.Context, t *model.GenerationTask, r *model.GenerationResult, seq int) {
+	raw := strings.TrimSpace(r.URL)
+	if c.Query("thumb") == "1" && r.ThumbURL != nil && *r.ThumbURL != "" {
+		raw = strings.TrimSpace(*r.ThumbURL)
+	}
+	if raw == "" {
+		jsonError(c, http.StatusNotFound, "not_found", "file not found")
+		return
+	}
+	if strings.HasPrefix(raw, "/api/v1/gen/cached/") {
+		rel := strings.TrimPrefix(raw, "/api/v1/gen/cached/")
+		serveOpenAICachedAsset(c, rel)
+		return
+	}
+	if strings.HasPrefix(raw, "data:") {
+		serveInlineDataURL(c, raw, t.TaskID, seq)
+		return
+	}
+	target := normalizeRemoteOpenAIAssetURL(raw)
+	if target == "" {
+		jsonError(c, http.StatusNotFound, "not_found", "file not found")
+		return
+	}
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		c.Redirect(http.StatusFound, target)
+		return
+	}
+	jsonError(c, http.StatusNotFound, "not_found", "file not found")
+}
+
+func serveOpenAICachedAsset(c *gin.Context, rel string) {
+	rel = strings.TrimLeft(rel, "/")
+	if rel == "" || strings.Contains(rel, "..") {
+		jsonError(c, http.StatusBadRequest, "invalid_request_error", "invalid file path")
+		return
+	}
+	root := strings.TrimSpace(os.Getenv("KLEIN_STORAGE_ROOT"))
+	if root == "" {
+		root = "/app/storage/public"
+	}
+	c.Header("Cache-Control", "public, max-age=86400")
+	c.File(filepath.Join(root, filepath.FromSlash(rel)))
+}
+
+func serveInlineDataURL(c *gin.Context, raw, taskID string, seq int) {
+	meta, payload, ok := strings.Cut(strings.TrimSpace(raw), ",")
+	if !ok || !strings.Contains(meta, ";base64") {
+		jsonError(c, http.StatusNotFound, "not_found", "file not found")
+		return
+	}
+	contentType := strings.TrimPrefix(meta, "data:")
+	if idx := strings.Index(contentType, ";"); idx >= 0 {
+		contentType = contentType[:idx]
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		jsonError(c, http.StatusNotFound, "not_found", "file not found")
+		return
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s_%d"`, taskID, seq))
+	c.Header("Cache-Control", "private, max-age=300")
+	c.Data(http.StatusOK, contentType, data)
+}
+
+func normalizeRemoteOpenAIAssetURL(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" || strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") || strings.HasPrefix(v, "data:") {
+		return v
+	}
+	if strings.HasPrefix(v, "/") {
+		return ""
+	}
+	return "https://assets.grok.com/" + strings.TrimLeft(v, "/")
 }
 
 func jsonError(c *gin.Context, status int, kind, msg string) {

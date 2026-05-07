@@ -1,6 +1,10 @@
 package handler
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/kleinai/backend/internal/model"
+)
 
 func TestResolveImageCount(t *testing.T) {
 	tests := []struct {
@@ -32,5 +36,25 @@ func TestResolveImageCount(t *testing.T) {
 				t.Fatalf("expected %d, got %d", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestNormalizeOpenAIResultURLForCachedImage(t *testing.T) {
+	task := &model.GenerationTask{TaskID: "task_123", Kind: "image"}
+	result := &model.GenerationResult{URL: "/api/v1/gen/cached/generated/2026/05/07/task_123_0.png"}
+	got := normalizeOpenAIResultURL("http://127.0.0.1:17200", task, result, 0, false)
+	want := "http://127.0.0.1:17200/v1/files/task_123/0"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestNormalizeOpenAIResultURLForRemoteImage(t *testing.T) {
+	task := &model.GenerationTask{TaskID: "task_123", Kind: "image"}
+	result := &model.GenerationResult{URL: "https://example.com/out.png"}
+	got := normalizeOpenAIResultURL("http://127.0.0.1:17200", task, result, 0, false)
+	want := "https://example.com/out.png"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
