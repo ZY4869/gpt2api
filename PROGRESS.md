@@ -4,6 +4,16 @@
 
 ---
 
+## v0.5.15 — 2026-05-07
+
+### GPT 图片链路
+
+- 修复 `gpt-image-2` ChatGPT Web 出图结果回收失败的问题：补齐从会话消息 `metadata.attachments / citations` 提取 `file_id`
+- 补齐 ChatGPT Web 图片下载地址识别：支持 `/backend-api/estuary/content?id=file_...` 这类新下载链路
+- 新增对应 Go 单测，覆盖附件型结果和 `estuary` 下载地址提取
+
+---
+
 ## v0.5.7 — 2026-05-07
 
 ### 图片生成

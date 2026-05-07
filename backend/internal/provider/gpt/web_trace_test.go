@@ -107,6 +107,37 @@ func TestExtractWebImageToolIDsAcceptsAssistantImageMessages(t *testing.T) {
 	}
 }
 
+func TestExtractWebImageToolIDsAcceptsMetadataAttachments(t *testing.T) {
+	raw := []byte(`{
+		"conversation_id":"conv_attach",
+		"messages":[
+			{
+				"message":{
+					"author":{"role":"assistant"},
+					"metadata":{
+						"async_task_type":"image_generation",
+						"attachments":[
+							{"id":"file_meta123456"},
+							{"file_id":"file_meta789012"}
+						]
+					},
+					"content":{
+						"content_type":"text",
+						"parts":["done"]
+					}
+				}
+			}
+		]
+	}`)
+	fileIDs, sedimentIDs := extractWebImageToolIDs(raw)
+	if len(fileIDs) != 2 || fileIDs[0] != "file_meta123456" || fileIDs[1] != "file_meta789012" {
+		t.Fatalf("expected attachment file ids, got %v", fileIDs)
+	}
+	if len(sedimentIDs) != 0 {
+		t.Fatalf("unexpected sediment ids: %v", sedimentIDs)
+	}
+}
+
 func TestWebImageMessageContentReferenceOrder(t *testing.T) {
 	content, metadata := webImageMessageContent("make it transparent", []webUploadMeta{{
 		FileID:        "file_ref123456",
@@ -155,16 +186,20 @@ func TestExtractWebImageDirectURLsIgnoresChatGPTStaticAssets(t *testing.T) {
 func TestExtractWebImageDirectURLsAcceptsRelativeBackendDownloadPaths(t *testing.T) {
 	raw := `{
 		"download_url":"\/backend-api\/files\/download\/file_abc123xyz?conversation_id=conv_123&inline=false",
-		"attachment_url":"\/backend-api\/conversation\/conv_123\/attachment\/sed_456xyz\/download"
+		"attachment_url":"\/backend-api\/conversation\/conv_123\/attachment\/sed_456xyz\/download",
+		"estuary_url":"\/backend-api\/estuary\/content?id=file_est123xyz&ts=1&p=fs"
 	}`
 	urls := extractWebImageDirectURLs(raw)
-	if len(urls) != 2 {
-		t.Fatalf("expected 2 backend download urls, got %#v", urls)
+	if len(urls) != 3 {
+		t.Fatalf("expected 3 backend download urls, got %#v", urls)
 	}
 	if urls[0] != "/backend-api/files/download/file_abc123xyz?conversation_id=conv_123&inline=false" {
 		t.Fatalf("unexpected first backend url %#v", urls[0])
 	}
 	if urls[1] != "/backend-api/conversation/conv_123/attachment/sed_456xyz/download" {
 		t.Fatalf("unexpected second backend url %#v", urls[1])
+	}
+	if urls[2] != "/backend-api/estuary/content?id=file_est123xyz&ts=1&p=fs" {
+		t.Fatalf("unexpected third backend url %#v", urls[2])
 	}
 }

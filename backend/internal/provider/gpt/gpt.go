@@ -1944,7 +1944,7 @@ var (
 	webFileIDRe         = regexp.MustCompile(`file[-_][A-Za-z0-9][A-Za-z0-9_-]{7,}`)
 	webSedimentIDRe     = regexp.MustCompile(`sediment://([A-Za-z0-9_-]+)`)
 	webAssetURLRe       = regexp.MustCompile(`https://(?:files\.oaiusercontent\.com|oaidalleapiprodscus\.blob\.core\.windows\.net)[^"\s]+`)
-	webRelativeAssetURLRe = regexp.MustCompile(`/backend-api/(?:files/download/[^"\s]+|conversation/[^"\s]+/attachment/[^"\s]+/download[^"\s]*)`)
+	webRelativeAssetURLRe = regexp.MustCompile(`/backend-api/(?:files/download/[^"\s]+|conversation/[^"\s]+/attachment/[^"\s]+/download[^"\s]*|estuary/content\?[^"\s]*id=file_[^"\s]+)`)
 )
 
 func extractWebImageIDs(payload string) (string, []string, []string, []string) {
@@ -2039,6 +2039,34 @@ func isWebImageAssetMessage(msg map[string]any) bool {
 func extractWebAssetPointersFromMessage(msg map[string]any, fileIDs, sedimentIDs *[]string) {
 	content, _ := msg["content"].(map[string]any)
 	walkWebAssetPointers(content, fileIDs, sedimentIDs)
+	metadata, _ := msg["metadata"].(map[string]any)
+	extractWebMetadataAssetIDs(metadata, fileIDs)
+}
+
+func extractWebMetadataAssetIDs(metadata map[string]any, fileIDs *[]string) {
+	if metadata == nil {
+		return
+	}
+	if attachments, ok := metadata["attachments"].([]any); ok {
+		for _, item := range attachments {
+			if m, ok := item.(map[string]any); ok {
+				addWebFileID(fileIDs, fmt.Sprint(m["id"]))
+				addWebFileID(fileIDs, fmt.Sprint(m["file_id"]))
+			}
+		}
+	}
+	if citations, ok := metadata["citations"].([]any); ok {
+		for _, item := range citations {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			addWebFileID(fileIDs, fmt.Sprint(m["file_id"]))
+			if nested, ok := m["metadata"].(map[string]any); ok {
+				addWebFileID(fileIDs, fmt.Sprint(nested["file_id"]))
+			}
+		}
+	}
 }
 
 func walkWebAssetPointers(v any, fileIDs, sedimentIDs *[]string) {
@@ -2062,16 +2090,21 @@ func walkWebAssetPointers(v any, fileIDs, sedimentIDs *[]string) {
 func addWebAssetPointer(ptr string, fileIDs, sedimentIDs *[]string) {
 	switch {
 	case strings.HasPrefix(ptr, "file-service://"):
-		id := strings.TrimPrefix(ptr, "file-service://")
-		if id != "" && id != "file_upload" {
-			addUniqueString(fileIDs, id)
-		}
+		addWebFileID(fileIDs, strings.TrimPrefix(ptr, "file-service://"))
 	case strings.HasPrefix(ptr, "sediment://"):
 		id := strings.TrimPrefix(ptr, "sediment://")
 		if id != "" {
 			addUniqueString(sedimentIDs, id)
 		}
 	}
+}
+
+func addWebFileID(fileIDs *[]string, raw string) {
+	id := strings.TrimSpace(raw)
+	if id == "" || id == "file_upload" || !strings.HasPrefix(id, "file_") {
+		return
+	}
+	addUniqueString(fileIDs, id)
 }
 
 func extractWebAssistantText(payload string) string {
@@ -2138,7 +2171,8 @@ func addUniqueWebAssetURLs(dst *[]string, vals ...string) {
 func isGeneratedWebAssetURL(rawURL string) bool {
 	trimmed := strings.TrimSpace(rawURL)
 	if strings.HasPrefix(trimmed, "/backend-api/files/download/") ||
-		(strings.HasPrefix(trimmed, "/backend-api/conversation/") && strings.Contains(trimmed, "/attachment/") && strings.Contains(trimmed, "/download")) {
+		(strings.HasPrefix(trimmed, "/backend-api/conversation/") && strings.Contains(trimmed, "/attachment/") && strings.Contains(trimmed, "/download")) ||
+		(strings.HasPrefix(trimmed, "/backend-api/estuary/content") && strings.Contains(trimmed, "id=file_")) {
 		return true
 	}
 	u, err := url.Parse(trimmed)
@@ -2147,6 +2181,12 @@ func isGeneratedWebAssetURL(rawURL string) bool {
 	}
 	host := strings.ToLower(u.Host)
 	path := strings.ToLower(u.EscapedPath())
+	if strings.EqualFold(host, "chatgpt.com") && strings.HasPrefix(path, "/backend-api/") &&
+		(strings.Contains(path, "/files/download/") ||
+			(strings.Contains(path, "/attachment/") && strings.Contains(path, "/download")) ||
+			(strings.Contains(path, "/estuary/content") && strings.Contains(strings.ToLower(u.RawQuery), "id=file_"))) {
+		return true
+	}
 	if strings.Contains(host, "openaiassets.blob.core.windows.net") {
 		return false
 	}
