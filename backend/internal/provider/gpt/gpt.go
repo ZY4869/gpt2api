@@ -354,7 +354,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			},
 		})
 		var urls, downloadErrs []string
-		deadline := time.Now().Add(9 * time.Minute)
+		deadline := webImagePollDeadline(ctx, 9*time.Minute, 15*time.Second)
 		pollCount := 0
 		for {
 			if conversationID != "" {
@@ -462,6 +462,17 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		return nil, fmt.Errorf("gpt image2 web returned 0 image")
 	}
 	return &provider.Result{TaskID: req.TaskID, Assets: assets, Latency: time.Since(start)}, nil
+}
+
+func webImagePollDeadline(ctx context.Context, maxWindow, safetyMargin time.Duration) time.Time {
+	deadline := time.Now().Add(maxWindow)
+	if dl, ok := ctx.Deadline(); ok {
+		safeDeadline := dl.Add(-safetyMargin)
+		if safeDeadline.Before(deadline) {
+			deadline = safeDeadline
+		}
+	}
+	return deadline
 }
 
 func (p *Provider) generateImage2(ctx context.Context, req *provider.Request) (*provider.Result, error) {

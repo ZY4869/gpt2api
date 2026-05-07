@@ -26,9 +26,10 @@ import { useEnsureLoggedIn } from '../../hooks/useEnsureLoggedIn';
 import { ApiError } from '../../lib/api';
 import { fmtRelative } from '../../lib/format';
 import { genApi } from '../../lib/services';
-import type { GenerationTask, PublicModel } from '../../lib/types';
+import type { GenerationResult, GenerationTask, PublicModel } from '../../lib/types';
 import { useAuthStore } from '../../stores/auth';
 import { toast } from '../../stores/toast';
+import { IMAGE_COUNT_OPTIONS, type ImageCountOption } from './imageCounts';
 
 type StudioMode = 'image' | 'text' | 'video';
 
@@ -56,6 +57,15 @@ type SelectModel = {
   input?: number;
   output?: number;
 };
+
+type PreviewImageItem = {
+  url: string;
+  title: string;
+};
+
+type PreviewState =
+  | { type: 'video'; title: string; url: string }
+  | { type: 'image'; title: string; items: PreviewImageItem[]; index: number };
 
 const VIDEO_MODELS = [
   { code: 'grok-imagine-video', label: 'Grok Imagine 视频', cost: 20 },
@@ -198,13 +208,13 @@ export default function CreateStudioPage() {
   const [imageRatio, setImageRatio] = useState<(typeof IMAGE_RATIOS)[number]>('1:1');
   const [imageResolution, setImageResolution] = useState<(typeof IMAGE_RESOLUTIONS)[number]>('1K');
   const [videoRatio, setVideoRatio] = useState<(typeof VIDEO_RATIOS)[number]>('16:9');
-  const [count, setCount] = useState(1);
+  const [count, setCount] = useState<ImageCountOption>(1);
   const [duration, setDuration] = useState<(typeof VIDEO_DURATIONS)[number]>(6);
   const [attachments, setAttachments] = useState<Array<{ id: string; name: string; dataUrl: string }>>([]);
   const [textResult, setTextResult] = useState('');
   const [task, setTask] = useState<GenerationTask | null>(null);
   const [historyPageSize, setHistoryPageSize] = useState<(typeof HISTORY_PAGE_SIZES)[number]>(20);
-  const [preview, setPreview] = useState<{ url: string; type: 'image' | 'video'; title: string } | null>(null);
+  const [preview, setPreview] = useState<PreviewState | null>(null);
   const pollRef = useRef<number | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -416,7 +426,11 @@ export default function CreateStudioPage() {
                 <>
                   <ComposerSelect value={imageRatio} onChange={(v) => setImageRatio(v as typeof IMAGE_RATIOS[number])} options={IMAGE_RATIOS.map((r) => ({ value: r, label: r }))} />
                   <ComposerSelect value={imageResolution} onChange={(v) => setImageResolution(v as typeof IMAGE_RESOLUTIONS[number])} options={IMAGE_RESOLUTIONS.map((r) => ({ value: r, label: r }))} />
-                  <ComposerSelect value={String(count)} onChange={(v) => setCount(Number(v))} options={[1, 2, 4].map((n) => ({ value: String(n), label: `${n}张` }))} />
+                  <ComposerSelect
+                    value={String(count)}
+                    onChange={(v) => setCount(Number(v) as ImageCountOption)}
+                    options={IMAGE_COUNT_OPTIONS.map((n) => ({ value: String(n), label: `${n}张` }))}
+                  />
                 </>
               )}
               {mode === 'video' && (
@@ -697,17 +711,18 @@ function HistoryActionMenu({
   );
 }
 
-function WorkCard({ item, onOpen }: { item: GenerationTask; onOpen: (preview: { url: string; type: 'image' | 'video'; title: string }) => void }) {
+function WorkCard({ item, onOpen }: { item: GenerationTask; onOpen: (preview: PreviewState) => void }) {
   const result = item.results?.[0];
   const thumb = result?.thumb_url;
   const original = result?.url;
   const [thumbFailed, setThumbFailed] = useState(false);
   const [loadedRatio, setLoadedRatio] = useState<string | null>(null);
   const isVideo = item.kind === 'video';
+  const imageItems = previewItemsFromResults(item.model, item.results);
   const showThumb = !!thumb && !thumbFailed;
   const declaredRatio = result?.width && result?.height ? `${result.width} / ${result.height}` : '';
   const mediaRatio = loadedRatio || declaredRatio || (isVideo ? '16 / 9' : '1 / 1');
-  const canOpen = item.status === 2 && !!original;
+  const canOpen = item.status === 2 && (isVideo ? !!original : imageItems.length > 0);
   const prompt = compactPrompt(item.prompt);
   const setRatioFromImage = (el: HTMLImageElement) => {
     if (el.naturalWidth > 0 && el.naturalHeight > 0) {
@@ -725,7 +740,16 @@ function WorkCard({ item, onOpen }: { item: GenerationTask; onOpen: (preview: { 
       <button
         type="button"
         disabled={!canOpen}
-        onClick={() => original && onOpen({ url: original, type: isVideo ? 'video' : 'image', title: item.model })}
+        onClick={() => {
+          if (!canOpen) return;
+          if (isVideo && original) {
+            onOpen({ type: 'video', url: original, title: item.model });
+            return;
+          }
+          if (imageItems.length > 0) {
+            onOpen({ type: 'image', title: item.model, items: imageItems, index: 0 });
+          }
+        }}
         style={{ aspectRatio: mediaRatio }}
         className={clsx(
           'relative grid w-full place-items-center overflow-hidden text-neutral-400 transition-[height]',
@@ -766,6 +790,9 @@ function WorkCard({ item, onOpen }: { item: GenerationTask; onOpen: (preview: { 
           </div>
         )}
         <div className="absolute left-2 top-2 rounded-full bg-black/55 px-2 py-0.5 text-xs text-white">{item.kind === 'video' ? '\u89c6\u9891' : '\u56fe\u7247'}</div>
+        {!isVideo && imageItems.length > 1 && (
+          <div className="absolute right-2 top-2 rounded-full bg-black/55 px-2 py-0.5 text-xs text-white">{imageItems.length}张</div>
+        )}
         {canOpen && (
           <div className="absolute inset-0 grid place-items-center bg-black/0 opacity-0 transition group-hover:bg-black/20 group-hover:opacity-100">
             <span className="grid h-10 w-10 place-items-center rounded-full bg-white/90 text-neutral-950 shadow-sm">
@@ -786,6 +813,15 @@ function compactPrompt(prompt?: string) {
   const text = String(prompt || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
   return text.length > 28 ? text.slice(0, 28) + '...' : text;
+}
+
+function previewItemsFromResults(model: string, results?: GenerationResult[]) {
+  return (results ?? [])
+    .filter((item): item is GenerationResult & { url: string } => !!item?.url)
+    .map((item, index) => ({
+      url: item.url,
+      title: `${model} ${index + 1}`,
+    }));
 }
 
 function GeneratingDots() {
@@ -809,18 +845,56 @@ function GeneratingDots() {
   );
 }
 
-function PreviewLightbox({ preview, onClose }: { preview: { url: string; type: 'image' | 'video'; title: string }; onClose: () => void }) {
+function PreviewLightbox({ preview, onClose }: { preview: PreviewState; onClose: () => void }) {
+  const [imageIndex, setImageIndex] = useState(preview.type === 'image' ? preview.index : 0);
+  const imageCount = preview.type === 'image' ? preview.items.length : 0;
+  const currentImage = preview.type === 'image' ? preview.items[imageIndex] : null;
+  const canStepImages = preview.type === 'image' && imageCount > 1;
+
+  useEffect(() => {
+    if (preview.type === 'image') {
+      setImageIndex(preview.index);
+    }
+  }, [preview]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
+      if (preview.type !== 'image' || preview.items.length <= 1) return;
+      if (e.key === 'ArrowLeft') {
+        setImageIndex((idx) => (idx - 1 + preview.items.length) % preview.items.length);
+      }
+      if (e.key === 'ArrowRight') {
+        setImageIndex((idx) => (idx + 1) % preview.items.length);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, preview]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" onMouseDown={onClose}>
       <div className="relative max-h-[92vh] max-w-[92vw]" onMouseDown={(e) => e.stopPropagation()}>
+        {canStepImages && (
+          <>
+            <button
+              type="button"
+              onClick={() => setImageIndex((idx) => (idx - 1 + imageCount) % imageCount)}
+              className="absolute left-3 top-1/2 z-10 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-white/90 text-neutral-900 shadow-sm transition hover:bg-white"
+              title="上一张"
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setImageIndex((idx) => (idx + 1) % imageCount)}
+              className="absolute right-3 top-1/2 z-10 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-white/90 text-neutral-900 shadow-sm transition hover:bg-white"
+              title="下一张"
+            >
+              <ChevronRight size={18} />
+            </button>
+          </>
+        )}
         <button
           type="button"
           onClick={onClose}
@@ -829,10 +903,15 @@ function PreviewLightbox({ preview, onClose }: { preview: { url: string; type: '
         >
           <X size={18} />
         </button>
+        {preview.type === 'image' && currentImage && (
+          <div className="absolute left-3 top-3 z-10 rounded-full bg-black/55 px-3 py-1 text-sm text-white">
+            {imageIndex + 1} / {imageCount}
+          </div>
+        )}
         {preview.type === 'video' ? (
           <video src={preview.url} controls autoPlay className="max-h-[92vh] max-w-[92vw] rounded-[12px] bg-black shadow-2xl" />
         ) : (
-          <img src={preview.url} alt={preview.title} className="max-h-[92vh] max-w-[92vw] rounded-[12px] object-contain shadow-2xl" />
+          currentImage && <img src={currentImage.url} alt={currentImage.title} className="max-h-[92vh] max-w-[92vw] rounded-[12px] object-contain shadow-2xl" />
         )}
       </div>
     </div>

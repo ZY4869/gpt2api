@@ -7,7 +7,7 @@ type CreateImageReq struct {
 	Prompt    string         `json:"prompt"       binding:"required,min=1,max=4000"`
 	NegPrompt string         `json:"neg_prompt"   binding:"omitempty,max=4000"`
 	Mode      string         `json:"mode"         binding:"omitempty,oneof=t2i i2i"`
-	Count     int            `json:"count"        binding:"omitempty,min=1,max=4"`
+	Count     int            `json:"count"        binding:"omitempty,min=1,max=10"`
 	Ratio     string         `json:"ratio"        binding:"omitempty"`
 	Quality   string         `json:"quality"      binding:"omitempty,oneof=draft standard hd"`
 	RefAssets []string       `json:"ref_assets"   binding:"omitempty"`

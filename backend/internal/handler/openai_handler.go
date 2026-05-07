@@ -142,15 +142,9 @@ func (h *OpenAIHandler) createImage(c *gin.Context, edit bool) {
 	if req.Model == "" {
 		req.Model = "gpt-image-2"
 	}
-	count := req.N
-	if count <= 0 {
-		count = req.Count
-	}
-	if count <= 0 {
-		count = 1
-	}
-	if count > 4 {
-		jsonError(c, http.StatusBadRequest, "invalid_request_error", "n/count must be less than or equal to 4")
+	count, errCount := resolveImageCount(req.N, req.Count)
+	if errCount != nil {
+		jsonError(c, http.StatusBadRequest, "invalid_request_error", errCount.Error())
 		return
 	}
 
@@ -192,6 +186,20 @@ func (h *OpenAIHandler) createImage(c *gin.Context, edit bool) {
 		return
 	}
 	h.respondTaskResult(c, t, 60*time.Second)
+}
+
+func resolveImageCount(n, count int) (int, error) {
+	out := n
+	if out <= 0 {
+		out = count
+	}
+	if out <= 0 {
+		out = 1
+	}
+	if out > 10 {
+		return 0, fmt.Errorf("n/count must be less than or equal to 10")
+	}
+	return out, nil
 }
 
 type videoReq struct {

@@ -267,6 +267,7 @@ export default function DocsPage() {
           <ul className="space-y-2 text-sm leading-7 text-text-secondary">
             <li>• 文字接口默认同步返回；stream=true 时走流式输出。</li>
             <li>• 图片接口默认同步等待，async=true 时只返回 task_id。</li>
+            <li>• 图片接口的 <code className="kbd mx-1">n / count</code> 支持 1-10；5-10 张建议使用 <code className="kbd mx-1">async=true</code>。</li>
             <li>• 视频接口默认异步，async=false 时最多等待 10 分钟。</li>
             <li>• 图片编辑必须带参考图；视频图生视频也支持参考图。</li>
           </ul>
@@ -313,17 +314,17 @@ export default function DocsPage() {
 
         <DocSection title="图片 /v1/images/generations" actionLabel="复制 cURL" onCopy={() => copy(IMAGE_CREATE_SAMPLE, '图片 cURL')}>
           <p className="mb-3 text-sm leading-7 text-text-secondary">
-            支持文生图、图生图、多图输入。推荐通过 <code className="kbd mx-1">size</code> 和 <code className="kbd mx-1">quality</code> 控制画质。
+            支持文生图、图生图、多图输入。<code className="kbd mx-1">n / count</code> 最大支持 10 张，推荐通过 <code className="kbd mx-1">size</code> 和 <code className="kbd mx-1">quality</code> 控制画质。
           </p>
           <CodeBlock>{IMAGE_CREATE_SAMPLE}</CodeBlock>
           <div className="mt-3 rounded-md border border-border bg-surface-2 p-3 text-small text-text-tertiary leading-7">
-            主要参数：<code className="kbd">model</code>、<code className="kbd">prompt</code>、<code className="kbd">n</code>、<code className="kbd">size</code>、<code className="kbd">quality</code>、<code className="kbd">style</code>、<code className="kbd">image/images/ref_assets</code>、<code className="kbd">async</code>。
+            主要参数：<code className="kbd">model</code>、<code className="kbd">prompt</code>、<code className="kbd">n</code> / <code className="kbd">count</code>、<code className="kbd">size</code>、<code className="kbd">quality</code>、<code className="kbd">style</code>、<code className="kbd">image/images/ref_assets</code>、<code className="kbd">async</code>。
           </div>
         </DocSection>
 
         <DocSection title="图片编辑 /v1/images/edits" actionLabel="复制 cURL" onCopy={() => copy(IMAGE_EDIT_SAMPLE, '图片编辑 cURL')}>
           <p className="mb-3 text-sm leading-7 text-text-secondary">
-            编辑接口和生成接口共用同一套任务流程，但必须提供至少一张参考图。适合换背景、改风格、局部重绘。
+            编辑接口和生成接口共用同一套任务流程，<code className="kbd mx-1">n / count</code> 同样支持 1-10，但必须提供至少一张参考图。适合换背景、改风格、局部重绘。
           </p>
           <CodeBlock>{IMAGE_EDIT_SAMPLE}</CodeBlock>
           <div className="mt-3 rounded-md border border-border bg-surface-2 p-3 text-small text-text-tertiary leading-7">

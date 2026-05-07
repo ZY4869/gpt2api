@@ -24,9 +24,12 @@ dist/
 # Local caches / scratch files
 .gocache/
 .tmp/
+tmp/
 **/.gocache/
 
 # Local operation artifacts
+chatgpt-*.json
+web/
 backend/img/
 sub2api-account-*.json
 scripts/deploy_web_fix.py

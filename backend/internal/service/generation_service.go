@@ -181,13 +181,7 @@ func (s *GenerationService) runTask(ctx context.Context, t *model.GenerationTask
 	}
 	refs = s.normalizeInputRefs(ctx, t, refs)
 
-	timeout := 5 * time.Minute
-	if t.Kind == "video" {
-		timeout = 15 * time.Minute
-	}
-	if t.Provider == model.ProviderGPT && t.Kind == string(provider.KindImage) && strings.EqualFold(t.ModelCode, "gpt-image-2") && shouldUseGPTWebRoute(params) {
-		timeout = 10 * time.Minute
-	}
+	timeout := generationTimeoutForTask(t, params)
 	maxAttempts := 3
 	retryDelay := 800 * time.Millisecond
 	if s.cfg != nil {
@@ -342,6 +336,25 @@ func (s *GenerationService) runTask(ctx context.Context, t *model.GenerationTask
 			log.Error("settle failed", zap.Error(err))
 		}
 	}
+}
+
+func generationTimeoutForTask(t *model.GenerationTask, params map[string]any) time.Duration {
+	timeout := 5 * time.Minute
+	if t == nil {
+		return timeout
+	}
+	if t.Kind == "video" {
+		return 15 * time.Minute
+	}
+	if t.Provider == model.ProviderGPT && t.Kind == string(provider.KindImage) && strings.EqualFold(t.ModelCode, "gpt-image-2") {
+		if t.Count > 4 {
+			return 30 * time.Minute
+		}
+		if shouldUseGPTWebRoute(params) {
+			return 10 * time.Minute
+		}
+	}
+	return timeout
 }
 
 func (s *GenerationService) makeUpstreamLogger(t *model.GenerationTask, acc *model.Account) provider.UpstreamLogger {

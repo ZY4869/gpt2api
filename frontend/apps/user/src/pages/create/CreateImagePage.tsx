@@ -10,6 +10,7 @@ import { genApi } from '../../lib/services';
 import type { GenerationTask } from '../../lib/types';
 import { useAuthStore } from '../../stores/auth';
 import { toast } from '../../stores/toast';
+import { IMAGE_COUNT_OPTIONS, type ImageCountOption } from './imageCounts';
 
 const MODELS = [
   { code: 'img-v3',    name: '通用 V3.0',    hot: true,  cost: 4 },
@@ -19,7 +20,6 @@ const MODELS = [
 ];
 
 const RATIOS = ['1:1', '3:4', '4:3', '16:9', '9:16'] as const;
-const COUNTS = [1, 2, 4] as const;
 const QUALITY = [
   { value: 'standard', label: '标准' },
   { value: 'hd', label: '高清' },
@@ -38,7 +38,7 @@ export default function CreateImagePage() {
 
   const [model, setModel] = useState(MODELS[0]!.code);
   const [ratio, setRatio] = useState<(typeof RATIOS)[number]>('1:1');
-  const [count, setCount] = useState<(typeof COUNTS)[number]>(2);
+  const [count, setCount] = useState<ImageCountOption>(2);
   const [quality, setQuality] = useState<Quality>('hd');
   const [prompt, setPrompt] = useState('一座漂浮在云端的未来主义城堡，黄昏，体积光，电影级构图');
 
@@ -168,8 +168,8 @@ export default function CreateImagePage() {
             </div>
           </FieldBlock>
           <FieldBlock label="数量">
-            <div className="grid grid-cols-3 gap-1.5">
-              {COUNTS.map((c) => (
+            <div className="grid grid-cols-5 gap-1.5">
+              {IMAGE_COUNT_OPTIONS.map((c) => (
                 <Pill key={c} active={c === count} onClick={() => setCount(c)}>
                   {c}
                 </Pill>
