@@ -518,6 +518,16 @@ export interface SystemSettings {
   'proxy.global_id'?: number;
   /** 全局代理选择模式 */
   'proxy.selection_mode'?: 'fixed' | 'random' | string;
+  /** GPT 图片链路 FlareSolverr 开关 */
+  'gpt.cf.enabled'?: boolean;
+  /** GPT 图片链路 FlareSolverr 地址 */
+  'gpt.cf.flaresolverr_url'?: string;
+  /** GPT 图片链路 FlareSolverr 超时秒数 */
+  'gpt.cf.timeout_seconds'?: number;
+  /** GPT 图片链路最近错误 */
+  'gpt.cf.last_error'?: string;
+  /** GPT 图片链路最近成功时间 */
+  'gpt.cf.last_refresh_at'?: number;
   /** OAuth access_token 距过期 N 小时内自动刷新 */
   'oauth.refresh_before_hours'?: number;
   /** OpenAI Codex CLI client_id */

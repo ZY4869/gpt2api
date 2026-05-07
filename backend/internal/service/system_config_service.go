@@ -36,6 +36,11 @@ const (
 	SettingGrokCFBrowser       = "grok.cf.browser"
 	SettingGrokCFLastError     = "grok.cf.last_error"
 	SettingGrokCFLastRefreshAt = "grok.cf.last_refresh_at"
+	SettingGPTCFEnabled        = "gpt.cf.enabled"
+	SettingGPTCFSolverURL      = "gpt.cf.flaresolverr_url"
+	SettingGPTCFTimeoutSec     = "gpt.cf.timeout_seconds"
+	SettingGPTCFLastError      = "gpt.cf.last_error"
+	SettingGPTCFLastRefreshAt  = "gpt.cf.last_refresh_at"
 )
 
 // SystemConfigService 通用系统配置 KV 服务，带 30s 内存缓存。
@@ -278,6 +283,25 @@ func (s *SystemConfigService) GrokCFRefreshInterval(ctx context.Context) time.Du
 
 func (s *SystemConfigService) GrokCFTimeout(ctx context.Context) time.Duration {
 	v := s.GetInt(ctx, SettingGrokCFTimeoutSec, 90)
+	if v < 30 {
+		v = 30
+	}
+	if v > 300 {
+		v = 300
+	}
+	return time.Duration(v) * time.Second
+}
+
+func (s *SystemConfigService) GPTCFEnabled(ctx context.Context) bool {
+	return s.GetBool(ctx, SettingGPTCFEnabled, false)
+}
+
+func (s *SystemConfigService) GPTCFSolverURL(ctx context.Context) string {
+	return strings.TrimRight(s.GetString(ctx, SettingGPTCFSolverURL, "http://flaresolverr:8191"), "/")
+}
+
+func (s *SystemConfigService) GPTCFTimeout(ctx context.Context) time.Duration {
+	v := s.GetInt(ctx, SettingGPTCFTimeoutSec, 90)
 	if v < 30 {
 		v = 30
 	}

@@ -272,7 +272,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 	if err != nil {
 		return nil, err
 	}
-	fp := newWebFP()
+	fp := newWebFP(req.SolverUserAgent)
 	start := time.Now()
 	logUpstream(ctx, req, provider.UpstreamLogEntry{
 		Provider: "gpt",
@@ -285,11 +285,11 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			"ref_count": len(req.RefAssets),
 		},
 	})
-	if err := p.webBootstrap(ctx, client, base, fp); err != nil {
+	if err := p.webBootstrap(ctx, client, base, req.SolverCookies, fp); err != nil {
 		logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.bootstrap", Method: "GET", URL: base + "/", Error: err.Error()})
 		return nil, err
 	}
-	reqs, err := p.webRequirements(ctx, client, base, fp, req.Credential)
+	reqs, err := p.webRequirements(ctx, client, base, fp, req.Credential, req.SolverCookies)
 	if err != nil {
 		logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.requirements", Method: "POST", URL: base + "/backend-api/sentinel/chat-requirements", Error: err.Error()})
 		return nil, err
@@ -303,7 +303,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 	})
 	refs := make([]webUploadMeta, 0, len(req.RefAssets))
 	for i, ref := range req.RefAssets {
-		meta, err := p.webUploadImage(ctx, client, base, fp, req.Credential, strings.TrimSpace(ref), fmt.Sprintf("image_%d.png", i+1))
+		meta, err := p.webUploadImage(ctx, client, base, fp, req.Credential, req.SolverCookies, strings.TrimSpace(ref), fmt.Sprintf("image_%d.png", i+1))
 		if err != nil {
 			logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.upload", Method: "POST", URL: base + "/backend-api/files", Error: err.Error(), Meta: map[string]any{"ref_index": i + 1}})
 			return nil, err
@@ -328,13 +328,13 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 	assets := make([]provider.Asset, 0, count)
 	lastDiag := ""
 	for i := 0; i < count && len(assets) < count; i++ {
-		conduit, err := p.webPrepareImageConversation(ctx, client, base, fp, req.Credential, reqs, prompt, webModel, refs)
+		conduit, err := p.webPrepareImageConversation(ctx, client, base, fp, req.Credential, req.SolverCookies, reqs, prompt, webModel, refs)
 		if err != nil {
 			logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.prepare", Method: "POST", URL: base + "/backend-api/f/conversation/prepare", Error: err.Error()})
 			return nil, err
 		}
 		logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.prepare", Method: "POST", URL: base + "/backend-api/f/conversation/prepare", Meta: map[string]any{"has_conduit": conduit != ""}})
-		conversationID, fileIDs, sedimentIDs, directURLs, lastText, err := p.webStartImageGeneration(ctx, client, base, fp, req.Credential, reqs, conduit, prompt, webModel, refs)
+		conversationID, fileIDs, sedimentIDs, directURLs, lastText, err := p.webStartImageGeneration(ctx, client, base, fp, req.Credential, req.SolverCookies, reqs, conduit, prompt, webModel, refs)
 		if err != nil {
 			logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.conversation", Method: "POST", URL: base + "/backend-api/f/conversation", Error: err.Error()})
 			return nil, err
@@ -358,17 +358,17 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		pollCount := 0
 		for {
 			if conversationID != "" {
-				pollFileIDs, pollSedimentIDs, pollURLs, _ := p.webConversationImageIDs(ctx, client, base, fp, req.Credential, conversationID, refs)
+				pollFileIDs, pollSedimentIDs, pollURLs, _ := p.webConversationImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
 				pollCount++
 				addUniqueString(&fileIDs, pollFileIDs...)
 				addUniqueString(&sedimentIDs, pollSedimentIDs...)
 				addUniqueString(&directURLs, pollURLs...)
 				if pollCount == 1 || pollCount%6 == 0 {
-					libFileIDs, _ := p.webLibraryImageIDs(ctx, client, base, fp, req.Credential, conversationID, refs)
+					libFileIDs, _ := p.webLibraryImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
 					addUniqueString(&fileIDs, libFileIDs...)
 				}
 			}
-			urls = p.webResolveImageURLs(ctx, client, base, fp, req.Credential, conversationID, fileIDs, sedimentIDs, refs)
+			urls = p.webResolveImageURLs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, fileIDs, sedimentIDs, refs)
 			addUniqueWebAssetURLs(&urls, directURLs...)
 			if pollCount == 1 || pollCount%12 == 0 {
 				logUpstream(ctx, req, provider.UpstreamLogEntry{
@@ -387,7 +387,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 				})
 			}
 			for _, u := range urls {
-				dataURL, mime, err := p.webDownloadAsDataURL(ctx, client, base, fp, req.Credential, u)
+				dataURL, mime, err := p.webDownloadAsDataURL(ctx, client, base, fp, req.Credential, req.SolverCookies, u)
 				if err != nil {
 					errText := fmt.Sprintf("%s: %v", sanitizeDiagURL(u), err)
 					before := len(downloadErrs)
@@ -774,9 +774,12 @@ type webFP struct {
 	SecCHUA       string
 }
 
-func newWebFP() webFP {
+func newWebFP(userAgent string) webFP {
+	if strings.TrimSpace(userAgent) == "" {
+		userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+	}
 	return webFP{
-		UserAgent:     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
+		UserAgent:     userAgent,
 		DeviceID:      uuid.NewString(),
 		SessionID:     uuid.NewString(),
 		ClientVersion: "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad",
@@ -785,12 +788,12 @@ func newWebFP() webFP {
 	}
 }
 
-func (p *Provider) webBootstrap(ctx context.Context, client *http.Client, base string, fp webFP) error {
+func (p *Provider) webBootstrap(ctx context.Context, client *http.Client, base, cookie string, fp webFP) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/", nil)
 	if err != nil {
 		return err
 	}
-	for k, v := range webBaseHeaders(fp, "", "") {
+	for k, v := range webBaseHeaders(fp, "", "", cookie) {
 		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
@@ -807,7 +810,7 @@ func (p *Provider) webBootstrap(ctx context.Context, client *http.Client, base s
 	return nil
 }
 
-func (p *Provider) webRequirements(ctx context.Context, client *http.Client, base string, fp webFP, token string) (webRequirement, error) {
+func (p *Provider) webRequirements(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie string) (webRequirement, error) {
 	path := "/backend-api/sentinel/chat-requirements"
 	body := map[string]string{"p": buildLegacyRequirementsToken(fp.UserAgent)}
 	payload, _ := json.Marshal(body)
@@ -815,7 +818,7 @@ func (p *Provider) webRequirements(ctx context.Context, client *http.Client, bas
 	if err != nil {
 		return webRequirement{}, err
 	}
-	for k, v := range webBaseHeaders(fp, token, path) {
+	for k, v := range webBaseHeaders(fp, token, path, cookie) {
 		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -856,7 +859,7 @@ func (p *Provider) webRequirements(ctx context.Context, client *http.Client, bas
 	return webRequirement{Token: out.Token, ProofToken: proof, SOToken: out.SOToken}, nil
 }
 
-func (p *Provider) webPrepareImageConversation(ctx context.Context, client *http.Client, base string, fp webFP, token string, reqs webRequirement, prompt, modelSlug string, refs []webUploadMeta) (string, error) {
+func (p *Provider) webPrepareImageConversation(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie string, reqs webRequirement, prompt, modelSlug string, refs []webUploadMeta) (string, error) {
 	path := "/backend-api/f/conversation/prepare"
 	body := map[string]any{
 		"action":                 "next",
@@ -879,7 +882,7 @@ func (p *Provider) webPrepareImageConversation(ctx context.Context, client *http
 	if err != nil {
 		return "", err
 	}
-	for k, v := range webImageHeaders(fp, token, path, reqs, "", "*/*") {
+	for k, v := range webImageHeaders(fp, token, path, cookie, reqs, "", "*/*") {
 		httpReq.Header.Set(k, v)
 	}
 	resp, err := client.Do(httpReq)
@@ -903,7 +906,7 @@ func (p *Provider) webPrepareImageConversation(ctx context.Context, client *http
 	return out.ConduitToken, nil
 }
 
-func (p *Provider) webStartImageGeneration(ctx context.Context, client *http.Client, base string, fp webFP, token string, reqs webRequirement, conduit, prompt, modelSlug string, refs []webUploadMeta) (string, []string, []string, []string, string, error) {
+func (p *Provider) webStartImageGeneration(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie string, reqs webRequirement, conduit, prompt, modelSlug string, refs []webUploadMeta) (string, []string, []string, []string, string, error) {
 	path := "/backend-api/f/conversation"
 	content, metadata := webImageMessageContent(prompt, refs)
 	messageID := uuid.NewString()
@@ -940,7 +943,7 @@ func (p *Provider) webStartImageGeneration(ctx context.Context, client *http.Cli
 	if err != nil {
 		return "", nil, nil, nil, "", err
 	}
-	for k, v := range webImageHeaders(fp, token, path, reqs, conduit, "text/event-stream") {
+	for k, v := range webImageHeaders(fp, token, path, cookie, reqs, conduit, "text/event-stream") {
 		httpReq.Header.Set(k, v)
 	}
 	resp, err := client.Do(httpReq)
@@ -1005,14 +1008,14 @@ func webImageMessageContent(prompt string, refs []webUploadMeta) (map[string]any
 	return content, metadata
 }
 
-func (p *Provider) webPollImageResults(ctx context.Context, client *http.Client, base string, fp webFP, token, conversationID string, timeout time.Duration, refs []webUploadMeta) ([]string, []string, []string, error) {
+func (p *Provider) webPollImageResults(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, conversationID string, timeout time.Duration, refs []webUploadMeta) ([]string, []string, []string, error) {
 	if conversationID == "" {
 		return nil, nil, nil, nil
 	}
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		fileIDs, sedimentIDs, directURLs, err := p.webConversationImageIDs(ctx, client, base, fp, token, conversationID, refs)
+		fileIDs, sedimentIDs, directURLs, err := p.webConversationImageIDs(ctx, client, base, fp, token, cookie, conversationID, refs)
 		if err == nil && (len(fileIDs) > 0 || len(sedimentIDs) > 0 || len(directURLs) > 0) {
 			return fileIDs, sedimentIDs, directURLs, nil
 		}
@@ -1022,13 +1025,13 @@ func (p *Provider) webPollImageResults(ctx context.Context, client *http.Client,
 	return nil, nil, nil, lastErr
 }
 
-func (p *Provider) webConversationImageIDs(ctx context.Context, client *http.Client, base string, fp webFP, token, conversationID string, refs []webUploadMeta) ([]string, []string, []string, error) {
+func (p *Provider) webConversationImageIDs(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, conversationID string, refs []webUploadMeta) ([]string, []string, []string, error) {
 	path := "/backend-api/conversation/" + conversationID
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	for k, v := range webBaseHeaders(fp, token, path) {
+	for k, v := range webBaseHeaders(fp, token, path, cookie) {
 		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Accept", "application/json")
@@ -1047,7 +1050,7 @@ func (p *Provider) webConversationImageIDs(ctx context.Context, client *http.Cli
 	return fileIDs, sedimentIDs, directURLs, nil
 }
 
-func (p *Provider) webLibraryImageIDs(ctx context.Context, client *http.Client, base string, fp webFP, token, conversationID string, refs []webUploadMeta) ([]string, error) {
+func (p *Provider) webLibraryImageIDs(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, conversationID string, refs []webUploadMeta) ([]string, error) {
 	path := "/backend-api/files/library"
 	body := map[string]any{"limit": 20, "cursor": nil}
 	payload, _ := json.Marshal(body)
@@ -1055,7 +1058,7 @@ func (p *Provider) webLibraryImageIDs(ctx context.Context, client *http.Client, 
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range webBaseHeaders(fp, token, path) {
+	for k, v := range webBaseHeaders(fp, token, path, cookie) {
 		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -1102,7 +1105,7 @@ func (p *Provider) webLibraryImageIDs(ctx context.Context, client *http.Client, 
 	return ids, nil
 }
 
-func (p *Provider) webResolveImageURLs(ctx context.Context, client *http.Client, base string, fp webFP, token, conversationID string, fileIDs, sedimentIDs []string, refs []webUploadMeta) []string {
+func (p *Provider) webResolveImageURLs(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, conversationID string, fileIDs, sedimentIDs []string, refs []webUploadMeta) []string {
 	var out []string
 	seen := map[string]bool{}
 	exclude := map[string]bool{}
@@ -1123,7 +1126,7 @@ func (p *Provider) webResolveImageURLs(ctx context.Context, client *http.Client,
 		if conversationID != "" {
 			path += "?conversation_id=" + url.QueryEscape(conversationID) + "&inline=false"
 		}
-		if u := p.webDownloadURL(ctx, client, base, fp, token, path); u != "" {
+		if u := p.webDownloadURL(ctx, client, base, fp, token, cookie, path); u != "" {
 			out = append(out, u)
 		}
 	}
@@ -1135,7 +1138,7 @@ func (p *Provider) webResolveImageURLs(ctx context.Context, client *http.Client,
 			continue
 		}
 		seen["sed:"+id] = true
-		if u := p.webDownloadURL(ctx, client, base, fp, token, "/backend-api/conversation/"+conversationID+"/attachment/"+id+"/download"); u != "" {
+		if u := p.webDownloadURL(ctx, client, base, fp, token, cookie, "/backend-api/conversation/"+conversationID+"/attachment/"+id+"/download"); u != "" {
 			out = append(out, u)
 		}
 	}
@@ -1167,12 +1170,12 @@ func filterWebGeneratedAssetIDs(fileIDs, sedimentIDs, directURLs []string, refs 
 	return filter(fileIDs), filter(sedimentIDs), filter(directURLs)
 }
 
-func (p *Provider) webDownloadURL(ctx context.Context, client *http.Client, base string, fp webFP, token, path string) string {
+func (p *Provider) webDownloadURL(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, path string) string {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
 		return ""
 	}
-	for k, v := range webBaseHeaders(fp, token, path) {
+	for k, v := range webBaseHeaders(fp, token, path, cookie) {
 		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Accept", "application/json")
@@ -1197,7 +1200,7 @@ func (p *Provider) webDownloadURL(ctx context.Context, client *http.Client, base
 	return ""
 }
 
-func (p *Provider) webDownloadAsDataURL(ctx context.Context, client *http.Client, base string, fp webFP, token, rawURL string) (string, string, error) {
+func (p *Provider) webDownloadAsDataURL(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, rawURL string) (string, string, error) {
 	downloadURL := rawURL
 	if strings.HasPrefix(downloadURL, "/") {
 		downloadURL = strings.TrimRight(base, "/") + downloadURL
@@ -1211,7 +1214,7 @@ func (p *Provider) webDownloadAsDataURL(ctx context.Context, client *http.Client
 		if parsed, err := url.Parse(downloadURL); err == nil && parsed.Path != "" {
 			targetPath = parsed.Path
 		}
-		for k, v := range webBaseHeaders(fp, token, targetPath) {
+		for k, v := range webBaseHeaders(fp, token, targetPath, cookie) {
 			httpReq.Header.Set(k, v)
 		}
 		httpReq.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
@@ -1241,7 +1244,7 @@ func (p *Provider) webDownloadAsDataURL(ctx context.Context, client *http.Client
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), mime, nil
 }
 
-func (p *Provider) webUploadImage(ctx context.Context, client *http.Client, base string, fp webFP, token, ref, name string) (webUploadMeta, error) {
+func (p *Provider) webUploadImage(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, ref, name string) (webUploadMeta, error) {
 	data, mime, err := readRefImage(ctx, client, ref)
 	if err != nil {
 		return webUploadMeta{}, err
@@ -1257,7 +1260,7 @@ func (p *Provider) webUploadImage(ctx context.Context, client *http.Client, base
 	if err != nil {
 		return webUploadMeta{}, err
 	}
-	for k, v := range webBaseHeaders(fp, token, path) {
+	for k, v := range webBaseHeaders(fp, token, path, cookie) {
 		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -1305,7 +1308,7 @@ func (p *Provider) webUploadImage(ctx context.Context, client *http.Client, base
 	if err != nil {
 		return webUploadMeta{}, err
 	}
-	for k, v := range webBaseHeaders(fp, token, path) {
+	for k, v := range webBaseHeaders(fp, token, path, cookie) {
 		doneReq.Header.Set(k, v)
 	}
 	doneReq.Header.Set("Content-Type", "application/json")
@@ -1318,14 +1321,14 @@ func (p *Provider) webUploadImage(ctx context.Context, client *http.Client, base
 	if resp.StatusCode >= 400 {
 		return webUploadMeta{}, fmt.Errorf("gpt image2 web upload confirm %d: %s", resp.StatusCode, snippet(raw, 240))
 	}
-	libraryFileID, err := p.webProcessUploadStream(ctx, client, base, fp, token, meta.FileID, name)
+	libraryFileID, err := p.webProcessUploadStream(ctx, client, base, fp, token, cookie, meta.FileID, name)
 	if err != nil {
 		return webUploadMeta{}, err
 	}
 	return webUploadMeta{FileID: meta.FileID, LibraryFileID: libraryFileID, FileName: name, FileSize: len(data), Mime: mime, Width: width, Height: height}, nil
 }
 
-func (p *Provider) webProcessUploadStream(ctx context.Context, client *http.Client, base string, fp webFP, token, fileID, fileName string) (string, error) {
+func (p *Provider) webProcessUploadStream(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, fileID, fileName string) (string, error) {
 	path := "/backend-api/files/process_upload_stream"
 	body := map[string]any{
 		"file_id":                  fileID,
@@ -1341,7 +1344,7 @@ func (p *Provider) webProcessUploadStream(ctx context.Context, client *http.Clie
 	if err != nil {
 		return "", err
 	}
-	for k, v := range webBaseHeaders(fp, token, path) {
+	for k, v := range webBaseHeaders(fp, token, path, cookie) {
 		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -1584,7 +1587,7 @@ func webImageModelSlug(req *provider.Request) string {
 	return "gpt-5-5-thinking"
 }
 
-func webBaseHeaders(fp webFP, token, path string) map[string]string {
+func webBaseHeaders(fp webFP, token, path, cookie string) map[string]string {
 	h := map[string]string{
 		"User-Agent":                 fp.UserAgent,
 		"Origin":                     "https://chatgpt.com",
@@ -1614,11 +1617,14 @@ func webBaseHeaders(fp webFP, token, path string) map[string]string {
 	if token != "" {
 		h["Authorization"] = "Bearer " + token
 	}
+	if strings.TrimSpace(cookie) != "" {
+		h["Cookie"] = strings.TrimSpace(cookie)
+	}
 	return h
 }
 
-func webImageHeaders(fp webFP, token, path string, reqs webRequirement, conduit, accept string) map[string]string {
-	h := webBaseHeaders(fp, token, path)
+func webImageHeaders(fp webFP, token, path, cookie string, reqs webRequirement, conduit, accept string) map[string]string {
+	h := webBaseHeaders(fp, token, path, cookie)
 	h["Content-Type"] = "application/json"
 	h["Accept"] = accept
 	h["OpenAI-Sentinel-Chat-Requirements-Token"] = reqs.Token

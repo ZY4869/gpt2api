@@ -16,6 +16,11 @@ interface FormState {
   proxy_global_enabled: boolean;
   proxy_selection_mode: 'fixed' | 'random';
   proxy_global_id: number;
+  gpt_cf_enabled: boolean;
+  gpt_cf_flaresolverr_url: string;
+  gpt_cf_timeout_seconds: number;
+  gpt_cf_last_error: string;
+  gpt_cf_last_refresh_at: number;
   oauth_refresh_before_hours: number;
   storage_history_retention_days: number;
   storage_result_retention_days: number;
@@ -47,6 +52,11 @@ const DEFAULT_FORM: FormState = {
   proxy_global_enabled: false,
   proxy_selection_mode: 'fixed',
   proxy_global_id: 0,
+  gpt_cf_enabled: false,
+  gpt_cf_flaresolverr_url: 'http://flaresolverr:8191',
+  gpt_cf_timeout_seconds: 90,
+  gpt_cf_last_error: '',
+  gpt_cf_last_refresh_at: 0,
   oauth_refresh_before_hours: 6,
   storage_history_retention_days: 180,
   storage_result_retention_days: 30,
@@ -87,6 +97,11 @@ function fromSettings(s: SystemSettings | undefined): FormState {
     proxy_global_enabled: asBool(s['proxy.global_enabled']),
     proxy_selection_mode: asStr(s['proxy.selection_mode'], 'fixed') === 'random' ? 'random' : 'fixed',
     proxy_global_id: asNum(s['proxy.global_id'], 0),
+    gpt_cf_enabled: asBool(s['gpt.cf.enabled']),
+    gpt_cf_flaresolverr_url: asStr(s['gpt.cf.flaresolverr_url'], 'http://flaresolverr:8191'),
+    gpt_cf_timeout_seconds: asNum(s['gpt.cf.timeout_seconds'], 90),
+    gpt_cf_last_error: asStr(s['gpt.cf.last_error']),
+    gpt_cf_last_refresh_at: asNum(s['gpt.cf.last_refresh_at'], 0),
     oauth_refresh_before_hours: asNum(s['oauth.refresh_before_hours'], 6),
     storage_history_retention_days: asNum(s['storage.history_retention_days'], 180),
     storage_result_retention_days: asNum(s['storage.result_retention_days'], 30),
@@ -120,6 +135,9 @@ function toPayload(f: FormState): Partial<SystemSettings> {
     'proxy.global_enabled': f.proxy_global_enabled,
     'proxy.selection_mode': f.proxy_selection_mode,
     'proxy.global_id': Number(f.proxy_global_id) || 0,
+    'gpt.cf.enabled': f.gpt_cf_enabled,
+    'gpt.cf.flaresolverr_url': f.gpt_cf_flaresolverr_url.trim(),
+    'gpt.cf.timeout_seconds': Number(f.gpt_cf_timeout_seconds) || 90,
     'oauth.refresh_before_hours': Number(f.oauth_refresh_before_hours) || 6,
     'storage.history_retention_days': Number(f.storage_history_retention_days) || 0,
     'storage.result_retention_days': Number(f.storage_result_retention_days) || 0,
@@ -254,6 +272,27 @@ export default function ConfigPage() {
                 <option value="oss">OSS 存储</option>
                 <option value="off">不缓存</option>
               </select>
+            </Field>
+          </Section>
+
+          <Section icon={<Cloud size={18} />} title="GPT CF 解题" desc="控制 GPT 图片 Web 链路是否在每次请求前先用 FlareSolverr 解 Cloudflare 挑战。">
+            <Toggle label="启用 GPT 图片 FlareSolverr" checked={form.gpt_cf_enabled} onChange={(v) => set('gpt_cf_enabled', v)} />
+            <TextField
+              label="FlareSolverr 地址"
+              value={form.gpt_cf_flaresolverr_url}
+              onChange={(v) => set('gpt_cf_flaresolverr_url', v)}
+              placeholder="http://flaresolverr:8191"
+            />
+            <NumberField label="解题超时（秒）" value={form.gpt_cf_timeout_seconds} min={30} max={300} onChange={(v) => set('gpt_cf_timeout_seconds', v)} />
+            <Field label="最近错误">
+              <textarea className="input min-h-[96px] text-small" value={form.gpt_cf_last_error || ''} readOnly />
+            </Field>
+            <Field label="最近成功时间">
+              <input
+                className="input"
+                value={form.gpt_cf_last_refresh_at ? new Date(form.gpt_cf_last_refresh_at * 1000).toLocaleString() : '未成功过'}
+                readOnly
+              />
             </Field>
           </Section>
 

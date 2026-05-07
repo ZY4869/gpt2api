@@ -43,10 +43,11 @@ func MountAPI(r *gin.Engine, deps *bootstrap.Deps) {
 	cdkSvc := service.NewCDKService(deps.DB, billingSvc)
 	sysCfgSvc := service.NewSystemConfigService(sysCfgRepo)
 	proxySvc := service.NewProxyService(proxyRepo, deps.AES)
+	cfSolverSvc := service.NewCFSolverService()
 
 	pool := service.NewAccountPool(accountRepo, 30*time.Second)
 	providers := factory.Build()
-	genSvc := service.NewGenerationService(deps.DB, genRepo, pool, billingSvc, providers, service.ConfigPriceFn(sysCfgSvc), deps.AES, proxySvc, sysCfgSvc)
+	genSvc := service.NewGenerationService(deps.DB, genRepo, pool, billingSvc, providers, service.ConfigPriceFn(sysCfgSvc), deps.AES, proxySvc, sysCfgSvc, cfSolverSvc)
 	chatSvc := service.NewChatService(deps.DB, genRepo, pool, billingSvc, sysCfgSvc, deps.AES, proxySvc)
 
 	authH := handler.NewAuthHandler(authSvc, userSvc)

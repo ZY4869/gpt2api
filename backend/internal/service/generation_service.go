@@ -48,13 +48,14 @@ type GenerationService struct {
 	aes       *crypto.AESGCM // 用于解密 account.credential_enc
 	proxySvc  *ProxyService
 	cfg       *SystemConfigService
+	cfSolver  *CFSolverService
 }
 
 // PriceFunc 模型计费：返回单次成本（点 *100）。
 type PriceFunc func(modelCode string, kind provider.Kind, params map[string]any) int64
 
 // NewGenerationService 构造。aes 必须非空（账号凭证加密强制）。
-func NewGenerationService(db *gorm.DB, r *repo.GenerationRepo, pool *AccountPool, billing *BillingService, providers map[string]provider.Provider, priceFn PriceFunc, aes *crypto.AESGCM, proxySvc *ProxyService, cfg *SystemConfigService) *GenerationService {
+func NewGenerationService(db *gorm.DB, r *repo.GenerationRepo, pool *AccountPool, billing *BillingService, providers map[string]provider.Provider, priceFn PriceFunc, aes *crypto.AESGCM, proxySvc *ProxyService, cfg *SystemConfigService, cfSolver *CFSolverService) *GenerationService {
 	return &GenerationService{
 		db:        db,
 		repo:      r,
@@ -65,6 +66,7 @@ func NewGenerationService(db *gorm.DB, r *repo.GenerationRepo, pool *AccountPool
 		aes:       aes,
 		proxySvc:  proxySvc,
 		cfg:       cfg,
+		cfSolver:  cfSolver,
 	}
 }
 
@@ -257,6 +259,13 @@ func (s *GenerationService) runTask(ctx context.Context, t *model.GenerationTask
 			}
 			provReq.Credential = cred
 		}
+		if err := s.attachGPTCFSolver(ctx, t, acc, provReq); err != nil {
+			lastErr = err
+			releaseAcc(acc)
+			acc = nil
+			s.failTask(ctx, t, fmt.Sprintf("provider call: %v", err))
+			return
+		}
 
 		rctx, cancel := context.WithTimeout(ctx, timeout)
 		out, err := prov.Generate(rctx, provReq)
@@ -404,6 +413,91 @@ func (s *GenerationService) makeUpstreamLogger(t *model.GenerationTask, acc *mod
 	}
 }
 
+func (s *GenerationService) attachGPTCFSolver(ctx context.Context, t *model.GenerationTask, acc *model.Account, provReq *provider.Request) error {
+	if s == nil || s.cfg == nil || provReq == nil || !requiresGPTCFWebSolve(t, provReq.Params) {
+		return nil
+	}
+	if !s.cfg.GPTCFEnabled(ctx) {
+		if provReq.UpstreamLog != nil {
+			provReq.UpstreamLog(ctx, provider.UpstreamLogEntry{
+				Provider: "gpt",
+				Stage:    "cf.solve.start",
+				URL:      "https://chatgpt.com/",
+				Meta: map[string]any{
+					"enabled":   false,
+					"skipped":   true,
+					"has_proxy": provReq.ProxyURL != "",
+				},
+			})
+		}
+		return nil
+	}
+	if s.cfSolver == nil {
+		return fmt.Errorf("gpt cf solver not configured")
+	}
+	solverURL := s.cfg.GPTCFSolverURL(ctx)
+	timeout := s.cfg.GPTCFTimeout(ctx)
+	start := time.Now()
+	if provReq.UpstreamLog != nil {
+		provReq.UpstreamLog(ctx, provider.UpstreamLogEntry{
+			Provider: "gpt",
+			Stage:    "cf.solve.start",
+			Method:   "POST",
+			URL:      solverURL + "/v1",
+			Meta: map[string]any{
+				"enabled":   true,
+				"target":    "https://chatgpt.com/",
+				"has_proxy": provReq.ProxyURL != "",
+			},
+		})
+	}
+	result, err := s.cfSolver.Solve(ctx, solverURL, "https://chatgpt.com/", provReq.ProxyURL, timeout)
+	if err != nil {
+		_ = s.cfg.UpsertMany(ctx, map[string]any{
+			SettingGPTCFLastError: err.Error(),
+		}, 0)
+		if provReq.UpstreamLog != nil {
+			provReq.UpstreamLog(ctx, provider.UpstreamLogEntry{
+				Provider:   "gpt",
+				Stage:      "cf.solve.fail",
+				Method:     "POST",
+				URL:        solverURL + "/v1",
+				DurationMs: time.Since(start).Milliseconds(),
+				Error:      err.Error(),
+				Meta: map[string]any{
+					"target":    "https://chatgpt.com/",
+					"has_proxy": provReq.ProxyURL != "",
+				},
+			})
+		}
+		return err
+	}
+	provReq.SolverCookies = result.Cookies
+	provReq.SolverUserAgent = result.UserAgent
+	provReq.SolverBrowser = result.Browser
+	_ = s.cfg.UpsertMany(ctx, map[string]any{
+		SettingGPTCFLastError:     "",
+		SettingGPTCFLastRefreshAt: result.UpdatedAt,
+	}, 0)
+	if provReq.UpstreamLog != nil {
+		provReq.UpstreamLog(ctx, provider.UpstreamLogEntry{
+			Provider:   "gpt",
+			Stage:      "cf.solve.ok",
+			Method:     "POST",
+			URL:        solverURL + "/v1",
+			DurationMs: time.Since(start).Milliseconds(),
+			Meta: map[string]any{
+				"target":            "https://chatgpt.com/",
+				"has_proxy":         provReq.ProxyURL != "",
+				"has_cf_clearance":  result.CFClearance != "",
+				"browser":           result.Browser,
+				"has_solver_cookie": result.Cookies != "",
+			},
+		})
+	}
+	return nil
+}
+
 func (s *GenerationService) providerCredential(ctx context.Context, acc *model.Account, proxyURL string) (string, error) {
 	if acc == nil {
 		return "", fmt.Errorf("missing account")
@@ -448,6 +542,16 @@ func accountRequiresCodexRoute(t *model.GenerationTask, params map[string]any) b
 		return false
 	}
 	return !shouldUseGPTWebRoute(params)
+}
+
+func requiresGPTCFWebSolve(t *model.GenerationTask, params map[string]any) bool {
+	if t == nil {
+		return false
+	}
+	return t.Provider == model.ProviderGPT &&
+		t.Kind == string(provider.KindImage) &&
+		strings.EqualFold(t.ModelCode, "gpt-image-2") &&
+		shouldUseGPTWebRoute(params)
 }
 
 func shouldUseGPTWebRoute(params map[string]any) bool {

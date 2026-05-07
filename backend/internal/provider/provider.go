@@ -47,6 +47,10 @@ type Request struct {
 	// BaseURL 优先级：account.base_url > provider 默认。
 	BaseURL  string
 	ProxyURL string
+	// Solver* 为运行时注入的 Cloudflare 解题结果，仅用于本次请求，不落库。
+	SolverCookies   string
+	SolverUserAgent string
+	SolverBrowser   string
 	// UpstreamLog records provider stage diagnostics for admin troubleshooting.
 	UpstreamLog UpstreamLogger
 }
