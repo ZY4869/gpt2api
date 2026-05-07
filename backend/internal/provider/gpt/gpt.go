@@ -1100,7 +1100,9 @@ func (p *Provider) webConversationImageIDs(ctx context.Context, client *http.Cli
 		return nil, nil, nil, fmt.Errorf("gpt image2 web poll %d: %s", resp.StatusCode, snippet(raw, 240))
 	}
 	fileIDs, sedimentIDs := extractWebImageToolIDs(raw)
-	_, _, _, directURLs := extractWebImageIDs(string(raw))
+	_, rawFileIDs, rawSedimentIDs, directURLs := extractWebImageIDs(string(raw))
+	addUniqueString(&fileIDs, rawFileIDs...)
+	addUniqueString(&sedimentIDs, rawSedimentIDs...)
 	fileIDs, sedimentIDs, directURLs = filterWebGeneratedAssetIDs(fileIDs, sedimentIDs, directURLs, refs)
 	return fileIDs, sedimentIDs, directURLs, nil
 }
@@ -1851,15 +1853,15 @@ func parseWebImageSSE(r io.Reader) (string, []string, []string, []string, string
 		if data == "" || data == "[DONE]" {
 			return
 		}
-		cid, _, _, _ := extractWebImageIDs(data)
+		cid, _, _, rawURLs := extractWebImageIDs(data)
 		if cid != "" && conversationID == "" {
 			conversationID = cid
 		}
+		addUniqueWebAssetURLs(&directURLs, rawURLs...)
 		if toolFileIDs, toolSedimentIDs := extractWebImageToolIDs([]byte(data)); len(toolFileIDs) > 0 || len(toolSedimentIDs) > 0 {
 			addUniqueString(&fileIDs, toolFileIDs...)
 			addUniqueString(&sedimentIDs, toolSedimentIDs...)
 		}
-		addUniqueWebAssetURLs(&directURLs, extractWebImageDirectURLs(data)...)
 		if text := extractWebAssistantText(data); text != "" {
 			lastText = text
 		}
@@ -1940,10 +1942,10 @@ func parseWebImageSSE(r io.Reader) (string, []string, []string, []string, string
 }
 
 var (
-	webConversationIDRe = regexp.MustCompile(`"conversation_id"\s*:\s*"([^"]+)"`)
-	webFileIDRe         = regexp.MustCompile(`file[-_][A-Za-z0-9][A-Za-z0-9_-]{7,}`)
-	webSedimentIDRe     = regexp.MustCompile(`sediment://([A-Za-z0-9_-]+)`)
-	webAssetURLRe       = regexp.MustCompile(`https://(?:files\.oaiusercontent\.com|oaidalleapiprodscus\.blob\.core\.windows\.net)[^"\s]+`)
+	webConversationIDRe   = regexp.MustCompile(`"conversation_id"\s*:\s*"([^"]+)"`)
+	webFileIDRe           = regexp.MustCompile(`file[-_][A-Za-z0-9][A-Za-z0-9_-]{7,}`)
+	webSedimentIDRe       = regexp.MustCompile(`sediment://([A-Za-z0-9_-]+)`)
+	webAssetURLRe         = regexp.MustCompile(`https://(?:files\.oaiusercontent\.com|oaidalleapiprodscus\.blob\.core\.windows\.net)[^"\s]+`)
 	webRelativeAssetURLRe = regexp.MustCompile(`/backend-api/(?:files/download/[^"\s]+|conversation/[^"\s]+/attachment/[^"\s]+/download[^"\s]*|estuary/content\?[^"\s]*id=file_[^"\s]+)`)
 )
 
@@ -2040,10 +2042,10 @@ func extractWebAssetPointersFromMessage(msg map[string]any, fileIDs, sedimentIDs
 	content, _ := msg["content"].(map[string]any)
 	walkWebAssetPointers(content, fileIDs, sedimentIDs)
 	metadata, _ := msg["metadata"].(map[string]any)
-	extractWebMetadataAssetIDs(metadata, fileIDs)
+	extractWebMetadataAssetIDs(metadata, fileIDs, sedimentIDs)
 }
 
-func extractWebMetadataAssetIDs(metadata map[string]any, fileIDs *[]string) {
+func extractWebMetadataAssetIDs(metadata map[string]any, fileIDs, sedimentIDs *[]string) {
 	if metadata == nil {
 		return
 	}
@@ -2065,6 +2067,36 @@ func extractWebMetadataAssetIDs(metadata map[string]any, fileIDs *[]string) {
 			if nested, ok := m["metadata"].(map[string]any); ok {
 				addWebFileID(fileIDs, fmt.Sprint(nested["file_id"]))
 			}
+		}
+	}
+	walkWebMetadataAssetIDs("", metadata, fileIDs, sedimentIDs)
+}
+
+func walkWebMetadataAssetIDs(key string, v any, fileIDs, sedimentIDs *[]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		if ptr := strings.TrimSpace(fmt.Sprint(t["asset_pointer"])); ptr != "" {
+			addWebAssetPointer(ptr, fileIDs, sedimentIDs)
+		}
+		for nestedKey, val := range t {
+			walkWebMetadataAssetIDs(nestedKey, val, fileIDs, sedimentIDs)
+		}
+	case []any:
+		for _, val := range t {
+			walkWebMetadataAssetIDs(key, val, fileIDs, sedimentIDs)
+		}
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return
+		}
+		if strings.HasPrefix(s, "file-service://") || strings.HasPrefix(s, "sediment://") {
+			addWebAssetPointer(s, fileIDs, sedimentIDs)
+			return
+		}
+		lowerKey := strings.ToLower(strings.TrimSpace(key))
+		if strings.HasPrefix(s, "file_") && (lowerKey == "id" || lowerKey == "file_id" || lowerKey == "ref_id" || strings.Contains(lowerKey, "file") || strings.Contains(lowerKey, "asset") || strings.Contains(lowerKey, "attachment") || strings.Contains(lowerKey, "reference")) {
+			addWebFileID(fileIDs, s)
 		}
 	}
 }

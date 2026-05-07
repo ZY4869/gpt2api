@@ -138,6 +138,87 @@ func TestExtractWebImageToolIDsAcceptsMetadataAttachments(t *testing.T) {
 	}
 }
 
+func TestExtractWebImageToolIDsAcceptsNestedMetadataReferences(t *testing.T) {
+	raw := []byte(`{
+		"conversation_id":"conv_nested_meta",
+		"messages":[
+			{
+				"message":{
+					"author":{"role":"assistant"},
+					"metadata":{
+						"async_task_type":"image_generation",
+						"content_references_by_file":{
+							"file_1":[
+								{
+									"type":"image_inline",
+									"ref_id":"file_meta_ref111111",
+									"download_url":"\/backend-api\/files\/download\/file_meta_ref111111?conversation_id=conv_nested_meta&inline=false"
+								}
+							]
+						},
+						"conversation_context_citation_metadata":[
+							{
+								"asset_pointer":"file-service://file_meta_ref222222"
+							},
+							{
+								"attachment":{
+									"file_id":"file_meta_ref333333"
+								}
+							},
+							{
+								"asset_pointer":"sediment://sed_meta_ref444444"
+							}
+						]
+					},
+					"content":{
+						"content_type":"text",
+						"parts":["done"]
+					}
+				}
+			}
+		]
+	}`)
+	fileIDs, sedimentIDs := extractWebImageToolIDs(raw)
+	if len(fileIDs) != 3 {
+		t.Fatalf("expected 3 nested metadata file ids, got %v", fileIDs)
+	}
+	if fileIDs[0] != "file_meta_ref111111" || fileIDs[1] != "file_meta_ref222222" || fileIDs[2] != "file_meta_ref333333" {
+		t.Fatalf("unexpected nested metadata file ids: %v", fileIDs)
+	}
+	if len(sedimentIDs) != 1 || sedimentIDs[0] != "sed_meta_ref444444" {
+		t.Fatalf("unexpected nested metadata sediment ids: %v", sedimentIDs)
+	}
+}
+
+func TestParseWebImageSSECollectsRawFileIDs(t *testing.T) {
+	raw := strings.NewReader(strings.Join([]string{
+		`data: {"conversation_id":"conv_raw_file","message":{"author":{"role":"assistant"},"metadata":{"async_task_type":"image_generation","content_references_by_file":{"k":[{"type":"image_inline","ref_id":"file_raw111111"}]}},"content":{"content_type":"multimodal_text","parts":[]}}}`,
+		"",
+		`data: {"download_url":"\/backend-api\/files\/download\/file_raw111111?conversation_id=conv_raw_file&inline=false"}`,
+		"",
+	}, "\n"))
+
+	conversationID, fileIDs, sedimentIDs, directURLs, lastText, err := parseWebImageSSE(raw)
+	if err != nil {
+		t.Fatalf("parseWebImageSSE error: %v", err)
+	}
+	if conversationID != "conv_raw_file" {
+		t.Fatalf("unexpected conversation id: %s", conversationID)
+	}
+	if len(fileIDs) != 1 || fileIDs[0] != "file_raw111111" {
+		t.Fatalf("expected raw file id from metadata, got %v", fileIDs)
+	}
+	if len(sedimentIDs) != 0 {
+		t.Fatalf("unexpected sediment ids: %v", sedimentIDs)
+	}
+	if len(directURLs) != 1 || !strings.Contains(directURLs[0], "file_raw111111") {
+		t.Fatalf("expected raw download url, got %v", directURLs)
+	}
+	if lastText != "" {
+		t.Fatalf("unexpected text: %q", lastText)
+	}
+}
+
 func TestWebImageMessageContentReferenceOrder(t *testing.T) {
 	content, metadata := webImageMessageContent("make it transparent", []webUploadMeta{{
 		FileID:        "file_ref123456",
