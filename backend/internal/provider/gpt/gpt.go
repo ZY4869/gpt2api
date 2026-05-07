@@ -772,11 +772,16 @@ type webFP struct {
 	ClientVersion string
 	BuildNumber   string
 	SecCHUA       string
+	Platform      string
 }
 
 func newWebFP(userAgent string) webFP {
 	if strings.TrimSpace(userAgent) == "" {
 		userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+	}
+	secCHUA := webSecCHUAFromUA(userAgent)
+	if secCHUA == "" {
+		secCHUA = `"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"`
 	}
 	return webFP{
 		UserAgent:     userAgent,
@@ -784,8 +789,59 @@ func newWebFP(userAgent string) webFP {
 		SessionID:     uuid.NewString(),
 		ClientVersion: "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad",
 		BuildNumber:   "5955942",
-		SecCHUA:       `"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"`,
+		SecCHUA:       secCHUA,
+		Platform:      webPlatformFromUA(userAgent),
 	}
+}
+
+func webSecCHUAFromUA(userAgent string) string {
+	ua := strings.TrimSpace(userAgent)
+	if ua == "" {
+		return ""
+	}
+	switch {
+	case strings.Contains(ua, "Edg/"):
+		version := firstBrowserMajor(ua, `Edg/(\d+)`)
+		if version == "" {
+			version = "143"
+		}
+		return fmt.Sprintf(`"Microsoft Edge";v="%s", "Chromium";v="%s", "Not_A Brand";v="24"`, version, version)
+	case strings.Contains(ua, "Chrome/"):
+		version := firstBrowserMajor(ua, `Chrome/(\d+)`)
+		if version == "" {
+			version = "143"
+		}
+		return fmt.Sprintf(`"Google Chrome";v="%s", "Chromium";v="%s", "Not_A Brand";v="24"`, version, version)
+	case strings.Contains(ua, "Firefox/"):
+		version := firstBrowserMajor(ua, `Firefox/(\d+)`)
+		if version == "" {
+			version = "138"
+		}
+		return fmt.Sprintf(`"Firefox";v="%s", "Not_A Brand";v="24"`, version)
+	default:
+		return ""
+	}
+}
+
+func webPlatformFromUA(userAgent string) string {
+	ua := strings.ToLower(strings.TrimSpace(userAgent))
+	switch {
+	case strings.Contains(ua, "mac os x"):
+		return "macOS"
+	case strings.Contains(ua, "linux"):
+		return "Linux"
+	default:
+		return "Windows"
+	}
+}
+
+func firstBrowserMajor(userAgent, pattern string) string {
+	re := regexp.MustCompile(pattern)
+	match := re.FindStringSubmatch(userAgent)
+	if len(match) >= 2 {
+		return strings.TrimSpace(match[1])
+	}
+	return ""
 }
 
 func (p *Provider) webBootstrap(ctx context.Context, client *http.Client, base, cookie string, fp webFP) error {
@@ -793,10 +849,9 @@ func (p *Provider) webBootstrap(ctx context.Context, client *http.Client, base, 
 	if err != nil {
 		return err
 	}
-	for k, v := range webBaseHeaders(fp, "", "", cookie) {
+	for k, v := range webBootstrapHeaders(fp, cookie) {
 		httpReq.Header.Set(k, v)
 	}
-	httpReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("gpt image2 web bootstrap: %w", err)
@@ -1400,9 +1455,6 @@ func strParam(p map[string]any, key, def string) string {
 }
 
 func (p *Provider) httpClient(proxyURL string) (*http.Client, error) {
-	if strings.TrimSpace(proxyURL) == "" {
-		return p.client, nil
-	}
 	return outbound.NewClient(outbound.Options{
 		ProxyURL: proxyURL,
 		Timeout:  defaultTimeout,
@@ -1601,7 +1653,7 @@ func webBaseHeaders(fp webFP, token, path, cookie string) map[string]string {
 		"Sec-Ch-Ua-Bitness":          `"64"`,
 		"Sec-Ch-Ua-Mobile":           "?0",
 		"Sec-Ch-Ua-Model":            `""`,
-		"Sec-Ch-Ua-Platform":         `"Windows"`,
+		"Sec-Ch-Ua-Platform":         `"` + fp.Platform + `"`,
 		"Sec-Ch-Ua-Platform-Version": `"19.0.0"`,
 		"Sec-Fetch-Dest":             "empty",
 		"Sec-Fetch-Mode":             "cors",
@@ -1620,6 +1672,20 @@ func webBaseHeaders(fp webFP, token, path, cookie string) map[string]string {
 	if strings.TrimSpace(cookie) != "" {
 		h["Cookie"] = strings.TrimSpace(cookie)
 	}
+	return h
+}
+
+func webBootstrapHeaders(fp webFP, cookie string) map[string]string {
+	h := webBaseHeaders(fp, "", "/", cookie)
+	h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+	h["Sec-Fetch-Dest"] = "document"
+	h["Sec-Fetch-Mode"] = "navigate"
+	h["Sec-Fetch-Site"] = "none"
+	h["Sec-Fetch-User"] = "?1"
+	h["Upgrade-Insecure-Requests"] = "1"
+	delete(h, "Authorization")
+	delete(h, "X-OpenAI-Target-Path")
+	delete(h, "X-OpenAI-Target-Route")
 	return h
 }
 
