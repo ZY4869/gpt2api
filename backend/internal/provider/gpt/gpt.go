@@ -1943,7 +1943,8 @@ var (
 	webConversationIDRe = regexp.MustCompile(`"conversation_id"\s*:\s*"([^"]+)"`)
 	webFileIDRe         = regexp.MustCompile(`file[-_][A-Za-z0-9][A-Za-z0-9_-]{7,}`)
 	webSedimentIDRe     = regexp.MustCompile(`sediment://([A-Za-z0-9_-]+)`)
-	webAssetURLRe       = regexp.MustCompile(`https:\\?/\\?/(?:files\.oaiusercontent\.com|oaidalleapiprodscus\.blob\.core\.windows\.net)[^"\\]+`)
+	webAssetURLRe       = regexp.MustCompile(`https://(?:files\.oaiusercontent\.com|oaidalleapiprodscus\.blob\.core\.windows\.net)[^"\s]+`)
+	webRelativeAssetURLRe = regexp.MustCompile(`/backend-api/(?:files/download/[^"\s]+|conversation/[^"\s]+/attachment/[^"\s]+/download[^"\s]*)`)
 )
 
 func extractWebImageIDs(payload string) (string, []string, []string, []string) {
@@ -1952,6 +1953,8 @@ func extractWebImageIDs(payload string) (string, []string, []string, []string) {
 		conversationID = m[1]
 	}
 	var fileIDs, sedimentIDs, directURLs []string
+	normalizedPayload := strings.ReplaceAll(payload, `\/`, `/`)
+	normalizedPayload = strings.ReplaceAll(normalizedPayload, `\u0026`, `&`)
 	for _, id := range webFileIDRe.FindAllString(payload, -1) {
 		addUniqueString(&fileIDs, id)
 	}
@@ -1960,13 +1963,15 @@ func extractWebImageIDs(payload string) (string, []string, []string, []string) {
 			addUniqueString(&sedimentIDs, m[1])
 		}
 	}
-	for _, raw := range webAssetURLRe.FindAllString(payload, -1) {
-		u := strings.ReplaceAll(raw, `\/`, `/`)
-		u = strings.ReplaceAll(u, `\u0026`, `&`)
+	for _, raw := range webAssetURLRe.FindAllString(normalizedPayload, -1) {
+		u := strings.TrimSpace(raw)
 		if strings.Contains(u, "openaiassets.blob.core.windows.net/$web/chatgpt/") {
 			continue
 		}
 		addUniqueWebAssetURLs(&directURLs, u)
+	}
+	for _, raw := range webRelativeAssetURLRe.FindAllString(normalizedPayload, -1) {
+		addUniqueWebAssetURLs(&directURLs, strings.TrimSpace(raw))
 	}
 	return conversationID, fileIDs, sedimentIDs, directURLs
 }
@@ -2131,7 +2136,12 @@ func addUniqueWebAssetURLs(dst *[]string, vals ...string) {
 }
 
 func isGeneratedWebAssetURL(rawURL string) bool {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
+	trimmed := strings.TrimSpace(rawURL)
+	if strings.HasPrefix(trimmed, "/backend-api/files/download/") ||
+		(strings.HasPrefix(trimmed, "/backend-api/conversation/") && strings.Contains(trimmed, "/attachment/") && strings.Contains(trimmed, "/download")) {
+		return true
+	}
+	u, err := url.Parse(trimmed)
 	if err != nil || u.Host == "" {
 		return false
 	}

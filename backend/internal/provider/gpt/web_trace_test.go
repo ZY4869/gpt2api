@@ -151,3 +151,20 @@ func TestExtractWebImageDirectURLsIgnoresChatGPTStaticAssets(t *testing.T) {
 		t.Fatalf("expected only generated asset URL, got %#v", urls)
 	}
 }
+
+func TestExtractWebImageDirectURLsAcceptsRelativeBackendDownloadPaths(t *testing.T) {
+	raw := `{
+		"download_url":"\/backend-api\/files\/download\/file_abc123xyz?conversation_id=conv_123&inline=false",
+		"attachment_url":"\/backend-api\/conversation\/conv_123\/attachment\/sed_456xyz\/download"
+	}`
+	urls := extractWebImageDirectURLs(raw)
+	if len(urls) != 2 {
+		t.Fatalf("expected 2 backend download urls, got %#v", urls)
+	}
+	if urls[0] != "/backend-api/files/download/file_abc123xyz?conversation_id=conv_123&inline=false" {
+		t.Fatalf("unexpected first backend url %#v", urls[0])
+	}
+	if urls[1] != "/backend-api/conversation/conv_123/attachment/sed_456xyz/download" {
+		t.Fatalf("unexpected second backend url %#v", urls[1])
+	}
+}
