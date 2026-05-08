@@ -31,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -255,6 +256,18 @@ type webUploadMeta struct {
 	Height        int
 }
 
+type webImageCandidate struct {
+	key                 string
+	rawURL              string
+	directOrderIndex    int
+	fileIDOrderIndex    int
+	sedimentIDOrderIndex int
+	firstSeenPollCount  int
+	downloadSuccessOrder int
+	dataURL             string
+	mime                string
+}
+
 func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request) (*provider.Result, error) {
 	base := strings.TrimRight(req.BaseURL, "/")
 	if base == "" || isCodexBase(base) || strings.Contains(base, "api.openai.com") {
@@ -325,10 +338,10 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		refs = append(refs, meta)
 	}
 	width, height := parseSize(size)
-	assets := make([]provider.Asset, 0, count)
-	seenAssetURLs := map[string]bool{}
+	candidateIndex := map[string]*webImageCandidate{}
+	downloadSuccessCounter := 0
 	lastDiag := ""
-	for i := 0; i < count && len(assets) < count; i++ {
+	for i := 0; i < count; i++ {
 		conduit, err := p.webPrepareImageConversation(ctx, client, base, fp, req.Credential, req.SolverCookies, reqs, prompt, webModel, refs)
 		if err != nil {
 			logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.prepare", Method: "POST", URL: base + "/backend-api/f/conversation/prepare", Error: err.Error()})
@@ -388,7 +401,12 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 					},
 				})
 			}
-			for _, u := range urls {
+			for idx, u := range urls {
+				candidate := ensureWebImageCandidate(candidateIndex, u)
+				updateWebImageCandidateOrder(candidate, directURLs, resolvedURLs, idx, pollCount)
+				if candidate.dataURL != "" {
+					continue
+				}
 				dataURL, mime, err := p.webDownloadAsDataURL(ctx, client, base, fp, req.Credential, req.SolverCookies, u)
 				if err != nil {
 					errText := fmt.Sprintf("%s: %v", sanitizeDiagURL(u), err)
@@ -406,22 +424,12 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 					URL:      sanitizeDiagURL(u),
 					Meta:     map[string]any{"mime": mime, "poll_count": pollCount},
 				})
-				if seenAssetURLs[dataURL] {
-					continue
-				}
-				seenAssetURLs[dataURL] = true
-				assets = append(assets, provider.Asset{
-					URL:    dataURL,
-					Width:  width,
-					Height: height,
-					Mime:   mime,
-					Meta:   map[string]any{"provider_route": "chatgpt_web", "size": "1K", "ratio": ratio},
-				})
-				if len(assets) >= count {
-					break
-				}
+				downloadSuccessCounter++
+				candidate.dataURL = dataURL
+				candidate.mime = mime
+				candidate.downloadSuccessOrder = downloadSuccessCounter
 			}
-			if len(assets) >= count || conversationID == "" || time.Now().After(deadline) {
+			if countWebImageCandidatesWithData(candidateIndex) >= count || conversationID == "" || time.Now().After(deadline) {
 				break
 			}
 			select {
@@ -434,7 +442,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 					Error:           ctx.Err().Error(),
 					Meta: map[string]any{
 						"poll_count":      pollCount,
-						"asset_count":     len(assets),
+						"asset_count":     countWebImageCandidatesWithData(candidateIndex),
 						"resolved_urls":   len(urls),
 						"download_errors": downloadErrs,
 					},
@@ -452,13 +460,17 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 				"poll_count":      pollCount,
 				"resolved_urls":   len(urls),
 				"download_errors": downloadErrs,
-				"asset_count":     len(assets),
+				"asset_count":     countWebImageCandidatesWithData(candidateIndex),
 			},
 		})
-		if len(assets) == 0 && conversationID == "" && lastText != "" {
+		if countWebImageCandidatesWithData(candidateIndex) == 0 && conversationID == "" && lastText != "" {
 			return nil, fmt.Errorf("gpt image2 web produced text instead of image: %s", snippet([]byte(lastText), 220))
 		}
+		if countWebImageCandidatesWithData(candidateIndex) >= count {
+			break
+		}
 	}
+	assets := buildOrderedWebAssets(candidateIndex, count, width, height, ratio)
 	if len(assets) == 0 {
 		if lastDiag != "" {
 			logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.failed", ResponseExcerpt: lastDiag})
@@ -2232,6 +2244,137 @@ func mergeOrderedWebAssetURLs(groups ...[]string) []string {
 		addUniqueWebAssetURLs(&out, group...)
 	}
 	return out
+}
+
+func ensureWebImageCandidate(index map[string]*webImageCandidate, rawURL string) *webImageCandidate {
+	key := strings.TrimSpace(rawURL)
+	if c, ok := index[key]; ok {
+		return c
+	}
+	c := &webImageCandidate{
+		key:                  key,
+		rawURL:               key,
+		directOrderIndex:     -1,
+		fileIDOrderIndex:     -1,
+		sedimentIDOrderIndex: -1,
+		firstSeenPollCount:   -1,
+	}
+	index[key] = c
+	return c
+}
+
+func updateWebImageCandidateOrder(candidate *webImageCandidate, directURLs, resolvedURLs []string, resolvedIndex, pollCount int) {
+	if candidate == nil {
+		return
+	}
+	if candidate.firstSeenPollCount < 0 {
+		candidate.firstSeenPollCount = pollCount
+	}
+	if candidate.directOrderIndex < 0 {
+		for idx, u := range directURLs {
+			if strings.TrimSpace(u) == candidate.rawURL {
+				candidate.directOrderIndex = idx
+				break
+			}
+		}
+	}
+	if candidate.fileIDOrderIndex < 0 {
+		candidate.fileIDOrderIndex = resolvedIndex
+	}
+	if candidate.sedimentIDOrderIndex < 0 {
+		candidate.sedimentIDOrderIndex = resolvedIndex
+	}
+	if candidate.directOrderIndex < 0 && candidate.fileIDOrderIndex < 0 {
+		for idx, u := range resolvedURLs {
+			if strings.TrimSpace(u) == candidate.rawURL {
+				candidate.fileIDOrderIndex = idx
+				break
+			}
+		}
+	}
+}
+
+func countWebImageCandidatesWithData(index map[string]*webImageCandidate) int {
+	count := 0
+	for _, c := range index {
+		if c != nil && c.dataURL != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func buildOrderedWebAssets(index map[string]*webImageCandidate, limit, width, height int, ratio string) []provider.Asset {
+	candidates := make([]*webImageCandidate, 0, len(index))
+	for _, c := range index {
+		if c == nil || c.dataURL == "" {
+			continue
+		}
+		candidates = append(candidates, c)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return compareWebImageCandidate(candidates[i], candidates[j])
+	})
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	assets := make([]provider.Asset, 0, len(candidates))
+	for _, c := range candidates {
+		mime := c.mime
+		if mime == "" {
+			mime = "image/png"
+		}
+		assets = append(assets, provider.Asset{
+			URL:    c.dataURL,
+			Width:  width,
+			Height: height,
+			Mime:   mime,
+			Meta: map[string]any{
+				"provider_route":        "chatgpt_web",
+				"size":                  "1K",
+				"ratio":                 ratio,
+				"direct_order_index":    c.directOrderIndex,
+				"file_id_order_index":   c.fileIDOrderIndex,
+				"sediment_order_index":  c.sedimentIDOrderIndex,
+				"first_seen_poll_count": c.firstSeenPollCount,
+			},
+		})
+	}
+	return assets
+}
+
+func compareWebImageCandidate(a, b *webImageCandidate) bool {
+	left := webImageCandidateSortTuple(a)
+	right := webImageCandidateSortTuple(b)
+	for i := range left {
+		if left[i] == right[i] {
+			continue
+		}
+		return left[i] < right[i]
+	}
+	return strings.Compare(a.rawURL, b.rawURL) < 0
+}
+
+func webImageCandidateSortTuple(c *webImageCandidate) [5]int {
+	if c == nil {
+		return [5]int{maxSortInt, maxSortInt, maxSortInt, maxSortInt, maxSortInt}
+	}
+	return [5]int{
+		normalizeSortIndex(c.directOrderIndex),
+		normalizeSortIndex(c.fileIDOrderIndex),
+		normalizeSortIndex(c.sedimentIDOrderIndex),
+		normalizeSortIndex(c.firstSeenPollCount),
+		normalizeSortIndex(c.downloadSuccessOrder),
+	}
+}
+
+const maxSortInt = int(^uint(0) >> 1)
+
+func normalizeSortIndex(v int) int {
+	if v < 0 {
+		return maxSortInt
+	}
+	return v
 }
 
 func isGeneratedWebAssetURL(rawURL string) bool {

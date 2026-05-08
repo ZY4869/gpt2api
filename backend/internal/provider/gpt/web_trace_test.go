@@ -345,3 +345,127 @@ func TestParseWebImageSSEPreservesDirectURLOrder(t *testing.T) {
 		t.Fatalf("expected direct url order to be preserved, got %#v", directURLs)
 	}
 }
+
+func TestBuildOrderedWebAssetsPrefersDirectOrderOverResolvedOrder(t *testing.T) {
+	index := map[string]*webImageCandidate{
+		"direct-b": {
+			key:                  "direct-b",
+			rawURL:               "direct-b",
+			directOrderIndex:     0,
+			fileIDOrderIndex:     1,
+			sedimentIDOrderIndex: -1,
+			firstSeenPollCount:   1,
+			downloadSuccessOrder: 2,
+			dataURL:              "data:image/png;base64,BBB",
+			mime:                 "image/png",
+		},
+		"direct-a": {
+			key:                  "direct-a",
+			rawURL:               "direct-a",
+			directOrderIndex:     1,
+			fileIDOrderIndex:     0,
+			sedimentIDOrderIndex: -1,
+			firstSeenPollCount:   1,
+			downloadSuccessOrder: 1,
+			dataURL:              "data:image/png;base64,AAA",
+			mime:                 "image/png",
+		},
+	}
+
+	assets := buildOrderedWebAssets(index, 10, 1024, 1024, "1:1")
+	if len(assets) != 2 {
+		t.Fatalf("expected 2 assets, got %d", len(assets))
+	}
+	if assets[0].URL != "data:image/png;base64,BBB" || assets[1].URL != "data:image/png;base64,AAA" {
+		t.Fatalf("expected direct-order result, got %#v", assets)
+	}
+}
+
+func TestBuildOrderedWebAssetsFallsBackToResolvedOrderWhenNoDirectOrder(t *testing.T) {
+	index := map[string]*webImageCandidate{
+		"resolved-2": {
+			key:                  "resolved-2",
+			rawURL:               "resolved-2",
+			directOrderIndex:     -1,
+			fileIDOrderIndex:     1,
+			sedimentIDOrderIndex: -1,
+			firstSeenPollCount:   1,
+			downloadSuccessOrder: 1,
+			dataURL:              "data:image/png;base64,BBB",
+			mime:                 "image/png",
+		},
+		"resolved-1": {
+			key:                  "resolved-1",
+			rawURL:               "resolved-1",
+			directOrderIndex:     -1,
+			fileIDOrderIndex:     0,
+			sedimentIDOrderIndex: -1,
+			firstSeenPollCount:   2,
+			downloadSuccessOrder: 2,
+			dataURL:              "data:image/png;base64,AAA",
+			mime:                 "image/png",
+		},
+	}
+
+	assets := buildOrderedWebAssets(index, 10, 1024, 1024, "1:1")
+	if len(assets) != 2 {
+		t.Fatalf("expected 2 assets, got %d", len(assets))
+	}
+	if assets[0].URL != "data:image/png;base64,AAA" || assets[1].URL != "data:image/png;base64,BBB" {
+		t.Fatalf("expected resolved-order fallback, got %#v", assets)
+	}
+}
+
+func TestBuildOrderedWebAssetsDoesNotUseDownloadOrderWhenDirectOrderExists(t *testing.T) {
+	index := map[string]*webImageCandidate{
+		"later-downloaded-but-first": {
+			key:                  "later-downloaded-but-first",
+			rawURL:               "later-downloaded-but-first",
+			directOrderIndex:     0,
+			fileIDOrderIndex:     1,
+			sedimentIDOrderIndex: -1,
+			firstSeenPollCount:   1,
+			downloadSuccessOrder: 2,
+			dataURL:              "data:image/png;base64,FIRST",
+			mime:                 "image/png",
+		},
+		"earlier-downloaded-but-second": {
+			key:                  "earlier-downloaded-but-second",
+			rawURL:               "earlier-downloaded-but-second",
+			directOrderIndex:     1,
+			fileIDOrderIndex:     0,
+			sedimentIDOrderIndex: -1,
+			firstSeenPollCount:   1,
+			downloadSuccessOrder: 1,
+			dataURL:              "data:image/png;base64,SECOND",
+			mime:                 "image/png",
+		},
+	}
+
+	assets := buildOrderedWebAssets(index, 10, 1024, 1024, "1:1")
+	if len(assets) != 2 {
+		t.Fatalf("expected 2 assets, got %d", len(assets))
+	}
+	if assets[0].URL != "data:image/png;base64,FIRST" || assets[1].URL != "data:image/png;base64,SECOND" {
+		t.Fatalf("expected direct order to beat download order, got %#v", assets)
+	}
+}
+
+func TestBuildOrderedWebAssetsKeepsSingleCandidateForDuplicateSource(t *testing.T) {
+	index := map[string]*webImageCandidate{}
+	candidate := ensureWebImageCandidate(index, "/backend-api/files/download/file_dup")
+	updateWebImageCandidateOrder(candidate, []string{"/backend-api/files/download/file_dup"}, []string{"/backend-api/files/download/file_dup"}, 0, 1)
+	candidate.dataURL = "data:image/png;base64,DUP"
+	candidate.mime = "image/png"
+
+	duplicate := ensureWebImageCandidate(index, "/backend-api/files/download/file_dup")
+	updateWebImageCandidateOrder(duplicate, []string{"/backend-api/files/download/file_dup"}, []string{"/backend-api/files/download/file_dup"}, 0, 2)
+
+	assets := buildOrderedWebAssets(index, 10, 1024, 1024, "1:1")
+	if len(assets) != 1 {
+		t.Fatalf("expected duplicate source to collapse into one asset, got %d", len(assets))
+	}
+	if assets[0].URL != "data:image/png;base64,DUP" {
+		t.Fatalf("unexpected asset %#v", assets[0])
+	}
+}
