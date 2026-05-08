@@ -10,7 +10,7 @@
 [![Forks](https://img.shields.io/github/forks/432539/gpt2api?style=flat-square&logo=github&color=blue)](https://github.com/432539/gpt2api/network/members)
 [![Issues](https://img.shields.io/github/issues/432539/gpt2api?style=flat-square&logo=github)](https://github.com/432539/gpt2api/issues)
 [![Last Commit](https://img.shields.io/github/last-commit/432539/gpt2api?style=flat-square&logo=git&color=success)](https://github.com/432539/gpt2api/commits/main)
-[![Release](https://img.shields.io/badge/release-v0.5.20-brightgreen?style=flat-square)](https://github.com/432539/gpt2api/releases)
+[![Release](https://img.shields.io/badge/release-v0.5.21-brightgreen?style=flat-square)](https://github.com/432539/gpt2api/releases)
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?style=flat-square&logo=go)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react)](https://react.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
@@ -33,7 +33,7 @@
 
 适用场景：私有化 AIGC 服务、白标 SaaS、多账号合规分发、内部团队调用聚合。
 
-> 当前默认版本：`v0.5.20`，作为当前 fork 的发布线；上游 `v2.x` 仍保留为新架构参考基线。
+> 当前默认版本：`v0.5.21`，作为当前 fork 的发布线；上游 `v2.x` 仍保留为新架构参考基线。
 
 ## ✨ 功能特性
 
@@ -275,6 +275,12 @@ pnpm --filter @kleinai/admin dev    # http://localhost:5174
 ## 📝 更新日志
 
 详见 [PROGRESS.md](./PROGRESS.md)。
+
+### v0.5.21（2026-05-08）
+
+- 继续修复 `gpt-image-2` ChatGPT Web 多图顺序：不再在“收齐图片后立刻定序”，而是进入额外 settle 阶段，尽可能等待上游 Web 最终展示顺序稳定后再落库
+- 候选图聚合从“按 URL”升级为按 `file_id / sediment_id / normalized download url / data hash` 归并，减少同一张图被不同来源重复识别导致的顺序漂移
+- 新增 authoritative order 提取与对应 Go 单测，优先采用会话消息中 `attachments / citations / conversation_context_citation_metadata / content.parts` 的数组顺序，拿不到时再回退到当前稳定顺序
 
 ### v0.5.20（2026-05-08）
 

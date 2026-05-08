@@ -256,16 +256,41 @@ type webUploadMeta struct {
 	Height        int
 }
 
+type webOrderedRef struct {
+	FileID     string
+	SedimentID string
+	RawURL     string
+	Source     string
+}
+
+type webConversationImageState struct {
+	OrderedRefs           []webOrderedRef
+	FileIDs               []string
+	SedimentIDs           []string
+	DirectURLs            []string
+	HasAuthoritativeOrder bool
+}
+
 type webImageCandidate struct {
-	key                 string
-	rawURL              string
-	directOrderIndex    int
-	fileIDOrderIndex    int
-	sedimentIDOrderIndex int
-	firstSeenPollCount  int
-	downloadSuccessOrder int
-	dataURL             string
-	mime                string
+	fileID                   string
+	sedimentID               string
+	rawURLs                  []string
+	contentHash              string
+	authoritativeFinalOrderIndex int
+	authoritativeSource      string
+	directOrderIndex         int
+	fileIDOrderIndex         int
+	sedimentIDOrderIndex     int
+	firstSeenPollCount       int
+	downloadSuccessOrder     int
+	dataURL                  string
+	mime                     string
+	mergedInto               *webImageCandidate
+}
+
+type webImageCandidatePool struct {
+	aliases    map[string]*webImageCandidate
+	candidates []*webImageCandidate
 }
 
 func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request) (*provider.Result, error) {
@@ -338,7 +363,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		refs = append(refs, meta)
 	}
 	width, height := parseSize(size)
-	candidateIndex := map[string]*webImageCandidate{}
+	candidatePool := newWebImageCandidatePool()
 	downloadSuccessCounter := 0
 	lastDiag := ""
 	for i := 0; i < count; i++ {
@@ -368,15 +393,21 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			},
 		})
 		var urls, downloadErrs []string
+		state := webConversationImageState{
+			FileIDs:    append([]string(nil), fileIDs...),
+			SedimentIDs: append([]string(nil), sedimentIDs...),
+			DirectURLs: append([]string(nil), directURLs...),
+		}
 		deadline := webImagePollDeadline(ctx, 9*time.Minute, 15*time.Second)
 		pollCount := 0
 		for {
 			if conversationID != "" {
-				pollFileIDs, pollSedimentIDs, pollURLs, _ := p.webConversationImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
+				pollState, _ := p.webConversationImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
 				pollCount++
-				addUniqueString(&fileIDs, pollFileIDs...)
-				addUniqueString(&sedimentIDs, pollSedimentIDs...)
-				addUniqueString(&directURLs, pollURLs...)
+				addUniqueString(&fileIDs, pollState.FileIDs...)
+				addUniqueString(&sedimentIDs, pollState.SedimentIDs...)
+				addUniqueString(&directURLs, pollState.DirectURLs...)
+				state = mergeWebConversationImageState(state, pollState)
 				if pollCount == 1 || pollCount%6 == 0 {
 					libFileIDs, _ := p.webLibraryImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
 					addUniqueString(&fileIDs, libFileIDs...)
@@ -385,6 +416,10 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			resolvedURLs := p.webResolveImageURLs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, fileIDs, sedimentIDs, refs)
 			// Prefer the model-emitted order from SSE/direct outputs before polled attachment URLs.
 			urls = mergeOrderedWebAssetURLs(directURLs, resolvedURLs)
+			state.FileIDs = mergeOrderedUniqueStrings(fileIDs)
+			state.SedimentIDs = mergeOrderedUniqueStrings(sedimentIDs)
+			state.DirectURLs = mergeOrderedWebAssetURLs(directURLs)
+			webApplyAuthoritativeOrder(candidatePool, state.OrderedRefs)
 			if pollCount == 1 || pollCount%12 == 0 {
 				logUpstream(ctx, req, provider.UpstreamLogEntry{
 					Provider:        "gpt",
@@ -398,12 +433,14 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 						"direct_urls":     len(directURLs),
 						"resolved_urls":   len(urls),
 						"download_errors": len(downloadErrs),
+						"authoritative_order_found": state.HasAuthoritativeOrder,
+						"authoritative_count": len(state.OrderedRefs),
 					},
 				})
 			}
 			for idx, u := range urls {
-				candidate := ensureWebImageCandidate(candidateIndex, u)
-				updateWebImageCandidateOrder(candidate, directURLs, resolvedURLs, idx, pollCount)
+				candidate := ensureWebImageCandidate(candidatePool, u)
+				updateWebImageCandidateOrder(candidate, state, idx, pollCount)
 				if candidate.dataURL != "" {
 					continue
 				}
@@ -428,8 +465,11 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 				candidate.dataURL = dataURL
 				candidate.mime = mime
 				candidate.downloadSuccessOrder = downloadSuccessCounter
+				candidate.contentHash = webImageContentHash(dataURL)
+				candidate = mergeWebImageCandidateByContentHash(candidatePool, candidate)
+				updateWebImageCandidateOrder(candidate, state, idx, pollCount)
 			}
-			if countWebImageCandidatesWithData(candidateIndex) >= count || conversationID == "" || time.Now().After(deadline) {
+			if countWebImageCandidatesWithData(candidatePool) >= count || conversationID == "" || time.Now().After(deadline) {
 				break
 			}
 			select {
@@ -442,14 +482,35 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 					Error:           ctx.Err().Error(),
 					Meta: map[string]any{
 						"poll_count":      pollCount,
-						"asset_count":     countWebImageCandidatesWithData(candidateIndex),
+						"asset_count":     countWebImageCandidatesWithData(candidatePool),
 						"resolved_urls":   len(urls),
 						"download_errors": downloadErrs,
+						"authoritative_order_found": state.HasAuthoritativeOrder,
+						"authoritative_count": len(state.OrderedRefs),
 					},
 				})
 				return nil, fmt.Errorf("gpt image2 web wait: %w", ctx.Err())
 			case <-time.After(5 * time.Second):
 			}
+		}
+		settleMeta := map[string]any{
+			"settle_started": false,
+			"settle_completed": false,
+			"settle_poll_count": 0,
+			"authoritative_order_found": state.HasAuthoritativeOrder,
+			"authoritative_count": len(state.OrderedRefs),
+			"fallback_used": false,
+		}
+		if conversationID != "" && count > 1 && countWebImageCandidatesWithData(candidatePool) >= count {
+			settleMeta["settle_started"] = true
+			settledState, settlePollCount, settled := webSettleImageOrder(ctx, p, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs, state, count, deadline)
+			settleMeta["settle_poll_count"] = settlePollCount
+			settleMeta["settle_completed"] = settled
+			settleMeta["authoritative_order_found"] = settledState.HasAuthoritativeOrder
+			settleMeta["authoritative_count"] = len(settledState.OrderedRefs)
+			settleMeta["fallback_used"] = !settledState.HasAuthoritativeOrder || len(settledState.OrderedRefs) < count
+			state = settledState
+			webApplyAuthoritativeOrder(candidatePool, state.OrderedRefs)
 		}
 		lastDiag = webImage2Diag(conversationID, fileIDs, sedimentIDs, directURLs, urls, downloadErrs, lastText)
 		logUpstream(ctx, req, provider.UpstreamLogEntry{
@@ -460,17 +521,23 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 				"poll_count":      pollCount,
 				"resolved_urls":   len(urls),
 				"download_errors": downloadErrs,
-				"asset_count":     countWebImageCandidatesWithData(candidateIndex),
+				"asset_count":     countWebImageCandidatesWithData(candidatePool),
+				"authoritative_order_found": state.HasAuthoritativeOrder,
+				"authoritative_count": len(state.OrderedRefs),
+				"settle_started": settleMeta["settle_started"],
+				"settle_completed": settleMeta["settle_completed"],
+				"settle_poll_count": settleMeta["settle_poll_count"],
+				"fallback_used": settleMeta["fallback_used"],
 			},
 		})
-		if countWebImageCandidatesWithData(candidateIndex) == 0 && conversationID == "" && lastText != "" {
+		if countWebImageCandidatesWithData(candidatePool) == 0 && conversationID == "" && lastText != "" {
 			return nil, fmt.Errorf("gpt image2 web produced text instead of image: %s", snippet([]byte(lastText), 220))
 		}
-		if countWebImageCandidatesWithData(candidateIndex) >= count {
+		if countWebImageCandidatesWithData(candidatePool) >= count {
 			break
 		}
 	}
-	assets := buildOrderedWebAssets(candidateIndex, count, width, height, ratio)
+	assets := buildOrderedWebAssets(candidatePool, count, width, height, ratio)
 	if len(assets) == 0 {
 		if lastDiag != "" {
 			logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.failed", ResponseExcerpt: lastDiag})
@@ -1093,28 +1160,28 @@ func webImageMessageContent(prompt string, refs []webUploadMeta) (map[string]any
 	return content, metadata
 }
 
-func (p *Provider) webPollImageResults(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, conversationID string, timeout time.Duration, refs []webUploadMeta) ([]string, []string, []string, error) {
+func (p *Provider) webPollImageResults(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, conversationID string, timeout time.Duration, refs []webUploadMeta) (webConversationImageState, error) {
 	if conversationID == "" {
-		return nil, nil, nil, nil
+		return webConversationImageState{}, nil
 	}
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		fileIDs, sedimentIDs, directURLs, err := p.webConversationImageIDs(ctx, client, base, fp, token, cookie, conversationID, refs)
-		if err == nil && (len(fileIDs) > 0 || len(sedimentIDs) > 0 || len(directURLs) > 0) {
-			return fileIDs, sedimentIDs, directURLs, nil
+		state, err := p.webConversationImageIDs(ctx, client, base, fp, token, cookie, conversationID, refs)
+		if err == nil && (len(state.FileIDs) > 0 || len(state.SedimentIDs) > 0 || len(state.DirectURLs) > 0 || len(state.OrderedRefs) > 0) {
+			return state, nil
 		}
 		lastErr = err
 		time.Sleep(4 * time.Second)
 	}
-	return nil, nil, nil, lastErr
+	return webConversationImageState{}, lastErr
 }
 
-func (p *Provider) webConversationImageIDs(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, conversationID string, refs []webUploadMeta) ([]string, []string, []string, error) {
+func (p *Provider) webConversationImageIDs(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, conversationID string, refs []webUploadMeta) (webConversationImageState, error) {
 	path := "/backend-api/conversation/" + conversationID
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
-		return nil, nil, nil, err
+		return webConversationImageState{}, err
 	}
 	for k, v := range webBaseHeaders(fp, token, path, cookie) {
 		httpReq.Header.Set(k, v)
@@ -1122,19 +1189,26 @@ func (p *Provider) webConversationImageIDs(ctx context.Context, client *http.Cli
 	httpReq.Header.Set("Accept", "application/json")
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, nil, nil, err
+		return webConversationImageState{}, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return nil, nil, nil, fmt.Errorf("gpt image2 web poll %d: %s", resp.StatusCode, snippet(raw, 240))
+		return webConversationImageState{}, fmt.Errorf("gpt image2 web poll %d: %s", resp.StatusCode, snippet(raw, 240))
 	}
 	toolFileIDs, toolSedimentIDs := extractWebImageToolIDs(raw)
 	_, rawFileIDs, rawSedimentIDs, directURLs := extractWebImageIDs(string(raw))
 	fileIDs := mergeOrderedUniqueStrings(rawFileIDs, toolFileIDs)
 	sedimentIDs := mergeOrderedUniqueStrings(rawSedimentIDs, toolSedimentIDs)
 	fileIDs, sedimentIDs, directURLs = filterWebGeneratedAssetIDs(fileIDs, sedimentIDs, directURLs, refs)
-	return fileIDs, sedimentIDs, directURLs, nil
+	orderedRefs, hasAuthoritative := extractWebAuthoritativeOrderedRefs(raw, refs)
+	return webConversationImageState{
+		OrderedRefs:           orderedRefs,
+		FileIDs:               fileIDs,
+		SedimentIDs:           sedimentIDs,
+		DirectURLs:            directURLs,
+		HasAuthoritativeOrder: hasAuthoritative,
+	}, nil
 }
 
 func (p *Provider) webLibraryImageIDs(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, conversationID string, refs []webUploadMeta) ([]string, error) {
@@ -2039,6 +2113,186 @@ func walkWebImageToolMessages(v any, fileIDs, sedimentIDs *[]string) {
 	}
 }
 
+func extractWebAuthoritativeOrderedRefs(raw []byte, refs []webUploadMeta) ([]webOrderedRef, bool) {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, false
+	}
+	out := make([]webOrderedRef, 0)
+	exclude := webReferenceAssetExclude(refs)
+	walkWebAuthoritativeImageMessages(v, exclude, &out)
+	out = filterUniqueWebOrderedRefs(out)
+	return out, len(out) > 0
+}
+
+func walkWebAuthoritativeImageMessages(v any, exclude map[string]bool, out *[]webOrderedRef) {
+	switch t := v.(type) {
+	case map[string]any:
+		if msg, ok := asWebMessageMap(t); ok && isWebImageAssetMessage(msg) {
+			collectWebAuthoritativeRefsFromMessage(msg, exclude, out)
+		}
+		if msgs, ok := t["messages"].([]any); ok {
+			for _, item := range msgs {
+				walkWebAuthoritativeImageMessages(item, exclude, out)
+			}
+			return
+		}
+		for _, val := range t {
+			walkWebAuthoritativeImageMessages(val, exclude, out)
+		}
+	case []any:
+		for _, val := range t {
+			walkWebAuthoritativeImageMessages(val, exclude, out)
+		}
+	}
+}
+
+func collectWebAuthoritativeRefsFromMessage(msg map[string]any, exclude map[string]bool, out *[]webOrderedRef) {
+	metadata, _ := msg["metadata"].(map[string]any)
+	content, _ := msg["content"].(map[string]any)
+	appendWebOrderedRefsFromArray(metadata["attachments"], "metadata.attachments", exclude, out)
+	appendWebOrderedRefsFromArray(metadata["citations"], "metadata.citations", exclude, out)
+	appendWebOrderedRefsFromArray(metadata["conversation_context_citation_metadata"], "metadata.conversation_context_citation_metadata", exclude, out)
+	appendWebOrderedRefsFromArray(content["parts"], "content.parts", exclude, out)
+}
+
+func appendWebOrderedRefsFromArray(v any, source string, exclude map[string]bool, out *[]webOrderedRef) {
+	items, ok := v.([]any)
+	if !ok {
+		return
+	}
+	for _, item := range items {
+		if ref, ok := extractWebOrderedRef(item, source, exclude); ok {
+			*out = append(*out, ref)
+		}
+	}
+}
+
+func extractWebOrderedRef(v any, source string, exclude map[string]bool) (webOrderedRef, bool) {
+	switch t := v.(type) {
+	case map[string]any:
+		if ptr := strings.TrimSpace(fmt.Sprint(t["asset_pointer"])); ptr != "" {
+			ref := orderedRefFromAssetPointer(ptr, source)
+			if !isExcludedWebOrderedRef(ref, exclude) && webOrderedRefKey(ref) != "" {
+				return ref, true
+			}
+		}
+		if ref := orderedRefFromMap(t, source); webOrderedRefKey(ref) != "" && !isExcludedWebOrderedRef(ref, exclude) {
+			return ref, true
+		}
+		for _, val := range t {
+			if ref, ok := extractWebOrderedRef(val, source, exclude); ok {
+				return ref, true
+			}
+		}
+	case []any:
+		for _, val := range t {
+			if ref, ok := extractWebOrderedRef(val, source, exclude); ok {
+				return ref, true
+			}
+		}
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return webOrderedRef{}, false
+		}
+		if strings.HasPrefix(s, "file-service://") || strings.HasPrefix(s, "sediment://") {
+			ref := orderedRefFromAssetPointer(s, source)
+			if webOrderedRefKey(ref) != "" && !isExcludedWebOrderedRef(ref, exclude) {
+				return ref, true
+			}
+		}
+		if isGeneratedWebAssetURL(s) {
+			ref := webOrderedRef{RawURL: s, Source: source}
+			if webOrderedRefKey(ref) != "" && !isExcludedWebOrderedRef(ref, exclude) {
+				return ref, true
+			}
+		}
+	}
+	return webOrderedRef{}, false
+}
+
+func orderedRefFromMap(m map[string]any, source string) webOrderedRef {
+	ref := webOrderedRef{Source: source}
+	for _, key := range []string{"id", "file_id", "ref_id"} {
+		if fileID := strings.TrimSpace(fmt.Sprint(m[key])); strings.HasPrefix(fileID, "file_") {
+			ref.FileID = fileID
+			break
+		}
+	}
+	for _, key := range []string{"download_url", "attachment_url", "estuary_url", "url"} {
+		if u := strings.TrimSpace(fmt.Sprint(m[key])); isGeneratedWebAssetURL(u) {
+			ref.RawURL = u
+			if ref.FileID == "" {
+				ref.FileID = extractWebFileIDFromURL(u)
+			}
+			if ref.SedimentID == "" {
+				ref.SedimentID = extractWebSedimentIDFromURL(u)
+			}
+			break
+		}
+	}
+	if nested, ok := m["attachment"].(map[string]any); ok {
+		if ref.FileID == "" {
+			if fileID := strings.TrimSpace(fmt.Sprint(nested["file_id"])); strings.HasPrefix(fileID, "file_") {
+				ref.FileID = fileID
+			}
+		}
+	}
+	return ref
+}
+
+func orderedRefFromAssetPointer(ptr, source string) webOrderedRef {
+	ref := webOrderedRef{Source: source}
+	switch {
+	case strings.HasPrefix(ptr, "file-service://"):
+		ref.FileID = strings.TrimPrefix(ptr, "file-service://")
+	case strings.HasPrefix(ptr, "sediment://"):
+		ref.SedimentID = strings.TrimPrefix(ptr, "sediment://")
+		if strings.HasPrefix(ref.SedimentID, "file_") {
+			ref.FileID = ref.SedimentID
+		}
+	}
+	return ref
+}
+
+func webReferenceAssetExclude(refs []webUploadMeta) map[string]bool {
+	exclude := map[string]bool{}
+	for _, ref := range refs {
+		if ref.FileID != "" {
+			exclude["file:"+ref.FileID] = true
+		}
+		if ref.LibraryFileID != "" {
+			exclude["file:"+ref.LibraryFileID] = true
+		}
+	}
+	return exclude
+}
+
+func isExcludedWebOrderedRef(ref webOrderedRef, exclude map[string]bool) bool {
+	if exclude == nil {
+		return false
+	}
+	if ref.FileID != "" && exclude["file:"+ref.FileID] {
+		return true
+	}
+	return false
+}
+
+func filterUniqueWebOrderedRefs(in []webOrderedRef) []webOrderedRef {
+	out := make([]webOrderedRef, 0, len(in))
+	seen := map[string]bool{}
+	for _, ref := range in {
+		key := webOrderedRefKey(ref)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, ref)
+	}
+	return out
+}
+
 func asWebMessageMap(m map[string]any) (map[string]any, bool) {
 	if msg, ok := m["message"].(map[string]any); ok {
 		return msg, true
@@ -2246,24 +2500,46 @@ func mergeOrderedWebAssetURLs(groups ...[]string) []string {
 	return out
 }
 
-func ensureWebImageCandidate(index map[string]*webImageCandidate, rawURL string) *webImageCandidate {
-	key := strings.TrimSpace(rawURL)
-	if c, ok := index[key]; ok {
-		return c
+func newWebImageCandidatePool() *webImageCandidatePool {
+	return &webImageCandidatePool{
+		aliases:    map[string]*webImageCandidate{},
+		candidates: make([]*webImageCandidate, 0, 8),
+	}
+}
+
+func ensureWebImageCandidate(pool *webImageCandidatePool, rawURL string) *webImageCandidate {
+	if pool == nil {
+		return nil
+	}
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil
+	}
+	if alias := webURLAlias(rawURL); alias != "" {
+		if c := pool.aliases[alias]; c != nil {
+			addWebImageCandidateAlias(pool, c, alias)
+			addWebImageCandidateRawURL(c, rawURL)
+			backfillWebImageCandidateIDsFromURL(pool, c, rawURL)
+			return canonicalWebImageCandidate(c)
+		}
 	}
 	c := &webImageCandidate{
-		key:                  key,
-		rawURL:               key,
-		directOrderIndex:     -1,
-		fileIDOrderIndex:     -1,
-		sedimentIDOrderIndex: -1,
-		firstSeenPollCount:   -1,
+		rawURLs:                     []string{},
+		authoritativeFinalOrderIndex: -1,
+		directOrderIndex:            -1,
+		fileIDOrderIndex:            -1,
+		sedimentIDOrderIndex:        -1,
+		firstSeenPollCount:          -1,
 	}
-	index[key] = c
+	pool.candidates = append(pool.candidates, c)
+	addWebImageCandidateRawURL(c, rawURL)
+	addWebImageCandidateAlias(pool, c, webURLAlias(rawURL))
+	backfillWebImageCandidateIDsFromURL(pool, c, rawURL)
 	return c
 }
 
-func updateWebImageCandidateOrder(candidate *webImageCandidate, directURLs, resolvedURLs []string, resolvedIndex, pollCount int) {
+func updateWebImageCandidateOrder(candidate *webImageCandidate, state webConversationImageState, resolvedIndex, pollCount int) {
+	candidate = canonicalWebImageCandidate(candidate)
 	if candidate == nil {
 		return
 	}
@@ -2271,45 +2547,62 @@ func updateWebImageCandidateOrder(candidate *webImageCandidate, directURLs, reso
 		candidate.firstSeenPollCount = pollCount
 	}
 	if candidate.directOrderIndex < 0 {
-		for idx, u := range directURLs {
-			if strings.TrimSpace(u) == candidate.rawURL {
+		for idx, u := range state.DirectURLs {
+			if webCandidateMatchesURL(candidate, u) {
 				candidate.directOrderIndex = idx
 				break
 			}
 		}
 	}
-	if candidate.fileIDOrderIndex < 0 {
-		candidate.fileIDOrderIndex = resolvedIndex
-	}
-	if candidate.sedimentIDOrderIndex < 0 {
-		candidate.sedimentIDOrderIndex = resolvedIndex
-	}
-	if candidate.directOrderIndex < 0 && candidate.fileIDOrderIndex < 0 {
-		for idx, u := range resolvedURLs {
-			if strings.TrimSpace(u) == candidate.rawURL {
+	if candidate.fileIDOrderIndex < 0 && candidate.fileID != "" {
+		for idx, id := range state.FileIDs {
+			if id == candidate.fileID {
 				candidate.fileIDOrderIndex = idx
 				break
 			}
 		}
 	}
+	if candidate.sedimentIDOrderIndex < 0 && candidate.sedimentID != "" {
+		for idx, id := range state.SedimentIDs {
+			if id == candidate.sedimentID {
+				candidate.sedimentIDOrderIndex = idx
+				break
+			}
+		}
+	}
+	if candidate.fileIDOrderIndex < 0 && candidate.fileID == "" && resolvedIndex >= 0 {
+		candidate.fileIDOrderIndex = resolvedIndex
+	}
+	if candidate.sedimentIDOrderIndex < 0 && candidate.sedimentID == "" && resolvedIndex >= 0 {
+		candidate.sedimentIDOrderIndex = resolvedIndex
+	}
 }
 
-func countWebImageCandidatesWithData(index map[string]*webImageCandidate) int {
+func countWebImageCandidatesWithData(pool *webImageCandidatePool) int {
 	count := 0
-	for _, c := range index {
-		if c != nil && c.dataURL != "" {
+	if pool == nil {
+		return 0
+	}
+	seen := map[*webImageCandidate]bool{}
+	for _, c := range pool.candidates {
+		c = canonicalWebImageCandidate(c)
+		if c != nil && c.dataURL != "" && !seen[c] {
+			seen[c] = true
 			count++
 		}
 	}
 	return count
 }
 
-func buildOrderedWebAssets(index map[string]*webImageCandidate, limit, width, height int, ratio string) []provider.Asset {
-	candidates := make([]*webImageCandidate, 0, len(index))
-	for _, c := range index {
-		if c == nil || c.dataURL == "" {
+func buildOrderedWebAssets(pool *webImageCandidatePool, limit, width, height int, ratio string) []provider.Asset {
+	candidates := make([]*webImageCandidate, 0, len(pool.candidates))
+	seen := map[*webImageCandidate]bool{}
+	for _, c := range pool.candidates {
+		c = canonicalWebImageCandidate(c)
+		if c == nil || c.dataURL == "" || seen[c] {
 			continue
 		}
+		seen[c] = true
 		candidates = append(candidates, c)
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -2330,17 +2623,402 @@ func buildOrderedWebAssets(index map[string]*webImageCandidate, limit, width, he
 			Height: height,
 			Mime:   mime,
 			Meta: map[string]any{
-				"provider_route":        "chatgpt_web",
-				"size":                  "1K",
-				"ratio":                 ratio,
-				"direct_order_index":    c.directOrderIndex,
-				"file_id_order_index":   c.fileIDOrderIndex,
-				"sediment_order_index":  c.sedimentIDOrderIndex,
-				"first_seen_poll_count": c.firstSeenPollCount,
+				"provider_route":                  "chatgpt_web",
+				"provider_order_source":           webProviderOrderSource(c),
+				"size":                            "1K",
+				"ratio":                           ratio,
+				"authoritative_final_order_index": c.authoritativeFinalOrderIndex,
+				"authoritative_snapshot_complete": c.authoritativeFinalOrderIndex >= 0,
+				"direct_order_index":              c.directOrderIndex,
+				"file_id_order_index":             c.fileIDOrderIndex,
+				"sediment_order_index":            c.sedimentIDOrderIndex,
+				"first_seen_poll_count":           c.firstSeenPollCount,
 			},
 		})
 	}
 	return assets
+}
+
+func mergeWebConversationImageState(base, extra webConversationImageState) webConversationImageState {
+	base.OrderedRefs = mergeOrderedWebOrderedRefs(base.OrderedRefs, extra.OrderedRefs)
+	base.FileIDs = mergeOrderedUniqueStrings(base.FileIDs, extra.FileIDs)
+	base.SedimentIDs = mergeOrderedUniqueStrings(base.SedimentIDs, extra.SedimentIDs)
+	base.DirectURLs = mergeOrderedWebAssetURLs(base.DirectURLs, extra.DirectURLs)
+	base.HasAuthoritativeOrder = base.HasAuthoritativeOrder || extra.HasAuthoritativeOrder
+	return base
+}
+
+func mergeOrderedWebOrderedRefs(groups ...[]webOrderedRef) []webOrderedRef {
+	out := make([]webOrderedRef, 0)
+	seen := map[string]bool{}
+	for _, group := range groups {
+		for _, ref := range group {
+			key := webOrderedRefKey(ref)
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+func webOrderedRefKey(ref webOrderedRef) string {
+	switch {
+	case ref.FileID != "":
+		return "file:" + ref.FileID
+	case ref.SedimentID != "":
+		return "sed:" + ref.SedimentID
+	case strings.TrimSpace(ref.RawURL) != "":
+		return webURLAlias(ref.RawURL)
+	default:
+		return ""
+	}
+}
+
+func webApplyAuthoritativeOrder(pool *webImageCandidatePool, refs []webOrderedRef) {
+	if pool == nil {
+		return
+	}
+	for _, c := range pool.candidates {
+		c = canonicalWebImageCandidate(c)
+		if c != nil {
+			c.authoritativeFinalOrderIndex = -1
+			c.authoritativeSource = ""
+		}
+	}
+	for idx, ref := range refs {
+		c := ensureWebImageCandidateForOrderedRef(pool, ref)
+		if c == nil || c.authoritativeFinalOrderIndex >= 0 {
+			continue
+		}
+		c.authoritativeFinalOrderIndex = idx
+		c.authoritativeSource = ref.Source
+	}
+}
+
+func ensureWebImageCandidateForOrderedRef(pool *webImageCandidatePool, ref webOrderedRef) *webImageCandidate {
+	if pool == nil {
+		return nil
+	}
+	var c *webImageCandidate
+	if ref.FileID != "" {
+		c = pool.aliases["file:"+ref.FileID]
+	}
+	if c == nil && ref.SedimentID != "" {
+		c = pool.aliases["sed:"+ref.SedimentID]
+	}
+	if c == nil && ref.RawURL != "" {
+		c = ensureWebImageCandidate(pool, ref.RawURL)
+	}
+	if c == nil {
+		c = &webImageCandidate{
+			rawURLs:                     []string{},
+			authoritativeFinalOrderIndex: -1,
+			directOrderIndex:            -1,
+			fileIDOrderIndex:            -1,
+			sedimentIDOrderIndex:        -1,
+			firstSeenPollCount:          -1,
+		}
+		pool.candidates = append(pool.candidates, c)
+	}
+	c = canonicalWebImageCandidate(c)
+	if ref.FileID != "" {
+		c.fileID = ref.FileID
+		addWebImageCandidateAlias(pool, c, "file:"+ref.FileID)
+	}
+	if ref.SedimentID != "" {
+		c.sedimentID = ref.SedimentID
+		addWebImageCandidateAlias(pool, c, "sed:"+ref.SedimentID)
+	}
+	if ref.RawURL != "" {
+		addWebImageCandidateRawURL(c, ref.RawURL)
+		addWebImageCandidateAlias(pool, c, webURLAlias(ref.RawURL))
+		backfillWebImageCandidateIDsFromURL(pool, c, ref.RawURL)
+	}
+	return c
+}
+
+func webSettleImageOrder(ctx context.Context, p *Provider, client *http.Client, base string, fp webFP, token, cookie, conversationID string, refs []webUploadMeta, current webConversationImageState, count int, deadline time.Time) (webConversationImageState, int, bool) {
+	if conversationID == "" || count <= 1 {
+		return current, 0, false
+	}
+	settleDeadline := time.Now().Add(30 * time.Second)
+	if settleDeadline.After(deadline) {
+		settleDeadline = deadline
+	}
+	snapshot := authoritativeSnapshotKey(current.OrderedRefs, count)
+	stableRounds := 0
+	settlePollCount := 0
+	for time.Now().Before(settleDeadline) {
+		select {
+		case <-ctx.Done():
+			return current, settlePollCount, false
+		case <-time.After(5 * time.Second):
+		}
+		next, err := p.webConversationImageIDs(ctx, client, base, fp, token, cookie, conversationID, refs)
+		settlePollCount++
+		if err != nil {
+			continue
+		}
+		current = mergeWebConversationImageState(current, next)
+		nextSnapshot := authoritativeSnapshotKey(current.OrderedRefs, count)
+		if len(current.OrderedRefs) >= count && nextSnapshot != "" {
+			if nextSnapshot == snapshot {
+				stableRounds++
+			} else {
+				stableRounds = 1
+				snapshot = nextSnapshot
+			}
+			if stableRounds >= 2 {
+				return current, settlePollCount, true
+			}
+		}
+	}
+	return current, settlePollCount, false
+}
+
+func authoritativeSnapshotKey(refs []webOrderedRef, limit int) string {
+	if limit > 0 && len(refs) < limit {
+		return ""
+	}
+	if limit <= 0 || limit > len(refs) {
+		limit = len(refs)
+	}
+	keys := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		keys = append(keys, webOrderedRefKey(refs[i]))
+	}
+	return strings.Join(keys, "|")
+}
+
+func canonicalWebImageCandidate(c *webImageCandidate) *webImageCandidate {
+	for c != nil && c.mergedInto != nil {
+		c = c.mergedInto
+	}
+	return c
+}
+
+func addWebImageCandidateAlias(pool *webImageCandidatePool, c *webImageCandidate, alias string) {
+	if pool == nil || c == nil || strings.TrimSpace(alias) == "" {
+		return
+	}
+	c = canonicalWebImageCandidate(c)
+	if existing := canonicalWebImageCandidate(pool.aliases[alias]); existing != nil && existing != c {
+		mergeWebImageCandidates(pool, existing, c)
+		c = canonicalWebImageCandidate(existing)
+	}
+	pool.aliases[alias] = c
+}
+
+func addWebImageCandidateRawURL(c *webImageCandidate, rawURL string) {
+	c = canonicalWebImageCandidate(c)
+	rawURL = strings.TrimSpace(rawURL)
+	if c == nil || rawURL == "" {
+		return
+	}
+	for _, existing := range c.rawURLs {
+		if existing == rawURL {
+			return
+		}
+	}
+	c.rawURLs = append(c.rawURLs, rawURL)
+}
+
+func backfillWebImageCandidateIDsFromURL(pool *webImageCandidatePool, c *webImageCandidate, rawURL string) {
+	c = canonicalWebImageCandidate(c)
+	if c == nil {
+		return
+	}
+	if fileID := extractWebFileIDFromURL(rawURL); fileID != "" {
+		c.fileID = fileID
+		addWebImageCandidateAlias(pool, c, "file:"+fileID)
+	}
+	if sedimentID := extractWebSedimentIDFromURL(rawURL); sedimentID != "" {
+		c.sedimentID = sedimentID
+		addWebImageCandidateAlias(pool, c, "sed:"+sedimentID)
+	}
+}
+
+func mergeWebImageCandidateByContentHash(pool *webImageCandidatePool, c *webImageCandidate) *webImageCandidate {
+	c = canonicalWebImageCandidate(c)
+	if pool == nil || c == nil || c.contentHash == "" {
+		return c
+	}
+	alias := "data:" + c.contentHash
+	if existing := canonicalWebImageCandidate(pool.aliases[alias]); existing != nil && existing != c {
+		mergeWebImageCandidates(pool, existing, c)
+		c = canonicalWebImageCandidate(existing)
+	}
+	pool.aliases[alias] = c
+	return c
+}
+
+func mergeWebImageCandidates(pool *webImageCandidatePool, dst, src *webImageCandidate) *webImageCandidate {
+	dst = canonicalWebImageCandidate(dst)
+	src = canonicalWebImageCandidate(src)
+	if dst == nil {
+		return src
+	}
+	if src == nil || src == dst {
+		return dst
+	}
+	if dst.fileID == "" {
+		dst.fileID = src.fileID
+	}
+	if dst.sedimentID == "" {
+		dst.sedimentID = src.sedimentID
+	}
+	if dst.contentHash == "" {
+		dst.contentHash = src.contentHash
+	}
+	for _, rawURL := range src.rawURLs {
+		addWebImageCandidateRawURL(dst, rawURL)
+		addWebImageCandidateAlias(pool, dst, webURLAlias(rawURL))
+	}
+	if dst.authoritativeFinalOrderIndex < 0 || (src.authoritativeFinalOrderIndex >= 0 && src.authoritativeFinalOrderIndex < dst.authoritativeFinalOrderIndex) {
+		dst.authoritativeFinalOrderIndex = src.authoritativeFinalOrderIndex
+		if src.authoritativeSource != "" {
+			dst.authoritativeSource = src.authoritativeSource
+		}
+	}
+	if dst.authoritativeSource == "" && src.authoritativeSource != "" {
+		dst.authoritativeSource = src.authoritativeSource
+	}
+	if dst.directOrderIndex < 0 || (src.directOrderIndex >= 0 && src.directOrderIndex < dst.directOrderIndex) {
+		dst.directOrderIndex = src.directOrderIndex
+	}
+	if dst.fileIDOrderIndex < 0 || (src.fileIDOrderIndex >= 0 && src.fileIDOrderIndex < dst.fileIDOrderIndex) {
+		dst.fileIDOrderIndex = src.fileIDOrderIndex
+	}
+	if dst.sedimentIDOrderIndex < 0 || (src.sedimentIDOrderIndex >= 0 && src.sedimentIDOrderIndex < dst.sedimentIDOrderIndex) {
+		dst.sedimentIDOrderIndex = src.sedimentIDOrderIndex
+	}
+	if dst.firstSeenPollCount < 0 || (src.firstSeenPollCount >= 0 && src.firstSeenPollCount < dst.firstSeenPollCount) {
+		dst.firstSeenPollCount = src.firstSeenPollCount
+	}
+	if dst.downloadSuccessOrder < 0 || (src.downloadSuccessOrder > 0 && (dst.downloadSuccessOrder <= 0 || src.downloadSuccessOrder < dst.downloadSuccessOrder)) {
+		dst.downloadSuccessOrder = src.downloadSuccessOrder
+	}
+	if dst.dataURL == "" && src.dataURL != "" {
+		dst.dataURL = src.dataURL
+	}
+	if dst.mime == "" && src.mime != "" {
+		dst.mime = src.mime
+	}
+	if dst.fileID != "" {
+		addWebImageCandidateAlias(pool, dst, "file:"+dst.fileID)
+	}
+	if dst.sedimentID != "" {
+		addWebImageCandidateAlias(pool, dst, "sed:"+dst.sedimentID)
+	}
+	if dst.contentHash != "" {
+		pool.aliases["data:"+dst.contentHash] = dst
+	}
+	src.mergedInto = dst
+	return dst
+}
+
+func webURLAlias(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	if strings.HasPrefix(rawURL, "data:") {
+		return rawURL
+	}
+	if strings.HasPrefix(rawURL, "/backend-api/") {
+		return "url:" + rawURL
+	}
+	if parsed, err := url.Parse(rawURL); err == nil {
+		if parsed.Path != "" && strings.HasPrefix(parsed.Path, "/backend-api/") {
+			if parsed.RawQuery != "" {
+				return "url:" + parsed.Path + "?" + parsed.RawQuery
+			}
+			return "url:" + parsed.Path
+		}
+	}
+	return "url:" + rawURL
+}
+
+func webCandidateMatchesURL(c *webImageCandidate, rawURL string) bool {
+	c = canonicalWebImageCandidate(c)
+	if c == nil {
+		return false
+	}
+	alias := webURLAlias(rawURL)
+	for _, item := range c.rawURLs {
+		if webURLAlias(item) == alias {
+			return true
+		}
+	}
+	if c.fileID != "" && extractWebFileIDFromURL(rawURL) == c.fileID {
+		return true
+	}
+	if c.sedimentID != "" && extractWebSedimentIDFromURL(rawURL) == c.sedimentID {
+		return true
+	}
+	return false
+}
+
+func extractWebFileIDFromURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	if m := regexp.MustCompile(`/files/download/(file_[A-Za-z0-9_-]+)`).FindStringSubmatch(rawURL); len(m) > 1 {
+		return m[1]
+	}
+	if strings.Contains(rawURL, "id=file_") {
+		if parsed, err := url.Parse(rawURL); err == nil {
+			return parsed.Query().Get("id")
+		}
+	}
+	return ""
+}
+
+func extractWebSedimentIDFromURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	if m := regexp.MustCompile(`/attachment/([A-Za-z0-9_-]+)/download`).FindStringSubmatch(rawURL); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+func webImageContentHash(dataURL string) string {
+	dataURL = strings.TrimSpace(dataURL)
+	if dataURL == "" {
+		return ""
+	}
+	h := sha3.Sum256([]byte(dataURL))
+	return fmt.Sprintf("%x", h[:])
+}
+
+func webProviderOrderSource(c *webImageCandidate) string {
+	c = canonicalWebImageCandidate(c)
+	switch {
+	case c == nil:
+		return "unknown"
+	case c.authoritativeFinalOrderIndex >= 0:
+		if c.authoritativeSource != "" {
+			return c.authoritativeSource
+		}
+		return "authoritative"
+	case c.directOrderIndex >= 0:
+		return "direct_output"
+	case c.fileIDOrderIndex >= 0:
+		return "file_id"
+	case c.sedimentIDOrderIndex >= 0:
+		return "sediment_id"
+	case c.downloadSuccessOrder > 0:
+		return "download_success"
+	default:
+		return "unknown"
+	}
 }
 
 func compareWebImageCandidate(a, b *webImageCandidate) bool {
@@ -2352,14 +3030,15 @@ func compareWebImageCandidate(a, b *webImageCandidate) bool {
 		}
 		return left[i] < right[i]
 	}
-	return strings.Compare(a.rawURL, b.rawURL) < 0
+	return strings.Compare(firstString(a.rawURLs), firstString(b.rawURLs)) < 0
 }
 
-func webImageCandidateSortTuple(c *webImageCandidate) [5]int {
+func webImageCandidateSortTuple(c *webImageCandidate) [6]int {
 	if c == nil {
-		return [5]int{maxSortInt, maxSortInt, maxSortInt, maxSortInt, maxSortInt}
+		return [6]int{maxSortInt, maxSortInt, maxSortInt, maxSortInt, maxSortInt, maxSortInt}
 	}
-	return [5]int{
+	return [6]int{
+		normalizeSortIndex(c.authoritativeFinalOrderIndex),
 		normalizeSortIndex(c.directOrderIndex),
 		normalizeSortIndex(c.fileIDOrderIndex),
 		normalizeSortIndex(c.sedimentIDOrderIndex),

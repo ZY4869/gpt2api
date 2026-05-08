@@ -347,32 +347,25 @@ func TestParseWebImageSSEPreservesDirectURLOrder(t *testing.T) {
 }
 
 func TestBuildOrderedWebAssetsPrefersDirectOrderOverResolvedOrder(t *testing.T) {
-	index := map[string]*webImageCandidate{
-		"direct-b": {
-			key:                  "direct-b",
-			rawURL:               "direct-b",
-			directOrderIndex:     0,
-			fileIDOrderIndex:     1,
-			sedimentIDOrderIndex: -1,
-			firstSeenPollCount:   1,
-			downloadSuccessOrder: 2,
-			dataURL:              "data:image/png;base64,BBB",
-			mime:                 "image/png",
-		},
-		"direct-a": {
-			key:                  "direct-a",
-			rawURL:               "direct-a",
-			directOrderIndex:     1,
-			fileIDOrderIndex:     0,
-			sedimentIDOrderIndex: -1,
-			firstSeenPollCount:   1,
-			downloadSuccessOrder: 1,
-			dataURL:              "data:image/png;base64,AAA",
-			mime:                 "image/png",
-		},
-	}
+	pool := newWebImageCandidatePool()
+	a := ensureWebImageCandidate(pool, "direct-a")
+	a.directOrderIndex = 1
+	a.fileIDOrderIndex = 0
+	a.sedimentIDOrderIndex = -1
+	a.firstSeenPollCount = 1
+	a.downloadSuccessOrder = 1
+	a.dataURL = "data:image/png;base64,AAA"
+	a.mime = "image/png"
+	b := ensureWebImageCandidate(pool, "direct-b")
+	b.directOrderIndex = 0
+	b.fileIDOrderIndex = 1
+	b.sedimentIDOrderIndex = -1
+	b.firstSeenPollCount = 1
+	b.downloadSuccessOrder = 2
+	b.dataURL = "data:image/png;base64,BBB"
+	b.mime = "image/png"
 
-	assets := buildOrderedWebAssets(index, 10, 1024, 1024, "1:1")
+	assets := buildOrderedWebAssets(pool, 10, 1024, 1024, "1:1")
 	if len(assets) != 2 {
 		t.Fatalf("expected 2 assets, got %d", len(assets))
 	}
@@ -382,32 +375,25 @@ func TestBuildOrderedWebAssetsPrefersDirectOrderOverResolvedOrder(t *testing.T) 
 }
 
 func TestBuildOrderedWebAssetsFallsBackToResolvedOrderWhenNoDirectOrder(t *testing.T) {
-	index := map[string]*webImageCandidate{
-		"resolved-2": {
-			key:                  "resolved-2",
-			rawURL:               "resolved-2",
-			directOrderIndex:     -1,
-			fileIDOrderIndex:     1,
-			sedimentIDOrderIndex: -1,
-			firstSeenPollCount:   1,
-			downloadSuccessOrder: 1,
-			dataURL:              "data:image/png;base64,BBB",
-			mime:                 "image/png",
-		},
-		"resolved-1": {
-			key:                  "resolved-1",
-			rawURL:               "resolved-1",
-			directOrderIndex:     -1,
-			fileIDOrderIndex:     0,
-			sedimentIDOrderIndex: -1,
-			firstSeenPollCount:   2,
-			downloadSuccessOrder: 2,
-			dataURL:              "data:image/png;base64,AAA",
-			mime:                 "image/png",
-		},
-	}
+	pool := newWebImageCandidatePool()
+	a := ensureWebImageCandidate(pool, "resolved-1")
+	a.directOrderIndex = -1
+	a.fileIDOrderIndex = 0
+	a.sedimentIDOrderIndex = -1
+	a.firstSeenPollCount = 2
+	a.downloadSuccessOrder = 2
+	a.dataURL = "data:image/png;base64,AAA"
+	a.mime = "image/png"
+	b := ensureWebImageCandidate(pool, "resolved-2")
+	b.directOrderIndex = -1
+	b.fileIDOrderIndex = 1
+	b.sedimentIDOrderIndex = -1
+	b.firstSeenPollCount = 1
+	b.downloadSuccessOrder = 1
+	b.dataURL = "data:image/png;base64,BBB"
+	b.mime = "image/png"
 
-	assets := buildOrderedWebAssets(index, 10, 1024, 1024, "1:1")
+	assets := buildOrderedWebAssets(pool, 10, 1024, 1024, "1:1")
 	if len(assets) != 2 {
 		t.Fatalf("expected 2 assets, got %d", len(assets))
 	}
@@ -417,32 +403,25 @@ func TestBuildOrderedWebAssetsFallsBackToResolvedOrderWhenNoDirectOrder(t *testi
 }
 
 func TestBuildOrderedWebAssetsDoesNotUseDownloadOrderWhenDirectOrderExists(t *testing.T) {
-	index := map[string]*webImageCandidate{
-		"later-downloaded-but-first": {
-			key:                  "later-downloaded-but-first",
-			rawURL:               "later-downloaded-but-first",
-			directOrderIndex:     0,
-			fileIDOrderIndex:     1,
-			sedimentIDOrderIndex: -1,
-			firstSeenPollCount:   1,
-			downloadSuccessOrder: 2,
-			dataURL:              "data:image/png;base64,FIRST",
-			mime:                 "image/png",
-		},
-		"earlier-downloaded-but-second": {
-			key:                  "earlier-downloaded-but-second",
-			rawURL:               "earlier-downloaded-but-second",
-			directOrderIndex:     1,
-			fileIDOrderIndex:     0,
-			sedimentIDOrderIndex: -1,
-			firstSeenPollCount:   1,
-			downloadSuccessOrder: 1,
-			dataURL:              "data:image/png;base64,SECOND",
-			mime:                 "image/png",
-		},
-	}
+	pool := newWebImageCandidatePool()
+	first := ensureWebImageCandidate(pool, "later-downloaded-but-first")
+	first.directOrderIndex = 0
+	first.fileIDOrderIndex = 1
+	first.sedimentIDOrderIndex = -1
+	first.firstSeenPollCount = 1
+	first.downloadSuccessOrder = 2
+	first.dataURL = "data:image/png;base64,FIRST"
+	first.mime = "image/png"
+	second := ensureWebImageCandidate(pool, "earlier-downloaded-but-second")
+	second.directOrderIndex = 1
+	second.fileIDOrderIndex = 0
+	second.sedimentIDOrderIndex = -1
+	second.firstSeenPollCount = 1
+	second.downloadSuccessOrder = 1
+	second.dataURL = "data:image/png;base64,SECOND"
+	second.mime = "image/png"
 
-	assets := buildOrderedWebAssets(index, 10, 1024, 1024, "1:1")
+	assets := buildOrderedWebAssets(pool, 10, 1024, 1024, "1:1")
 	if len(assets) != 2 {
 		t.Fatalf("expected 2 assets, got %d", len(assets))
 	}
@@ -452,20 +431,114 @@ func TestBuildOrderedWebAssetsDoesNotUseDownloadOrderWhenDirectOrderExists(t *te
 }
 
 func TestBuildOrderedWebAssetsKeepsSingleCandidateForDuplicateSource(t *testing.T) {
-	index := map[string]*webImageCandidate{}
-	candidate := ensureWebImageCandidate(index, "/backend-api/files/download/file_dup")
-	updateWebImageCandidateOrder(candidate, []string{"/backend-api/files/download/file_dup"}, []string{"/backend-api/files/download/file_dup"}, 0, 1)
+	pool := newWebImageCandidatePool()
+	state := webConversationImageState{
+		DirectURLs: []string{"/backend-api/files/download/file_dup"},
+		FileIDs:    []string{"file_dup"},
+	}
+	candidate := ensureWebImageCandidate(pool, "/backend-api/files/download/file_dup")
+	updateWebImageCandidateOrder(candidate, state, 0, 1)
 	candidate.dataURL = "data:image/png;base64,DUP"
 	candidate.mime = "image/png"
 
-	duplicate := ensureWebImageCandidate(index, "/backend-api/files/download/file_dup")
-	updateWebImageCandidateOrder(duplicate, []string{"/backend-api/files/download/file_dup"}, []string{"/backend-api/files/download/file_dup"}, 0, 2)
+	duplicate := ensureWebImageCandidate(pool, "/backend-api/files/download/file_dup")
+	updateWebImageCandidateOrder(duplicate, state, 0, 2)
 
-	assets := buildOrderedWebAssets(index, 10, 1024, 1024, "1:1")
+	assets := buildOrderedWebAssets(pool, 10, 1024, 1024, "1:1")
 	if len(assets) != 1 {
 		t.Fatalf("expected duplicate source to collapse into one asset, got %d", len(assets))
 	}
 	if assets[0].URL != "data:image/png;base64,DUP" {
 		t.Fatalf("unexpected asset %#v", assets[0])
+	}
+}
+
+func TestBuildOrderedWebAssetsAuthoritativeOrderBeatsDirectOrder(t *testing.T) {
+	pool := newWebImageCandidatePool()
+	a := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_a", Source: "metadata.attachments"})
+	a.directOrderIndex = 1
+	a.fileIDOrderIndex = 0
+	a.firstSeenPollCount = 1
+	a.downloadSuccessOrder = 1
+	a.dataURL = "data:image/png;base64,AAA"
+	a.mime = "image/png"
+	b := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_b", Source: "metadata.attachments"})
+	b.directOrderIndex = 0
+	b.fileIDOrderIndex = 1
+	b.firstSeenPollCount = 1
+	b.downloadSuccessOrder = 2
+	b.dataURL = "data:image/png;base64,BBB"
+	b.mime = "image/png"
+	webApplyAuthoritativeOrder(pool, []webOrderedRef{
+		{FileID: "file_a", Source: "metadata.attachments"},
+		{FileID: "file_b", Source: "metadata.attachments"},
+	})
+
+	assets := buildOrderedWebAssets(pool, 10, 1024, 1024, "1:1")
+	if len(assets) != 2 {
+		t.Fatalf("expected 2 assets, got %d", len(assets))
+	}
+	if assets[0].URL != "data:image/png;base64,AAA" || assets[1].URL != "data:image/png;base64,BBB" {
+		t.Fatalf("expected authoritative-order result, got %#v", assets)
+	}
+}
+
+func TestExtractWebAuthoritativeOrderedRefsPrefersAttachmentArrayOrder(t *testing.T) {
+	raw := []byte(`{
+		"messages":[
+			{
+				"message":{
+					"author":{"role":"assistant"},
+					"metadata":{
+						"async_task_type":"image_generation",
+						"attachments":[
+							{"file_id":"file_b"},
+							{"file_id":"file_a"}
+						],
+						"content_references_by_file":{
+							"x":[
+								{"ref_id":"file_a"},
+								{"ref_id":"file_b"}
+							]
+						}
+					},
+					"content":{"content_type":"multimodal_text","parts":["done"]}
+				}
+			}
+		]
+	}`)
+	refs, ok := extractWebAuthoritativeOrderedRefs(raw, nil)
+	if !ok {
+		t.Fatalf("expected authoritative refs")
+	}
+	if len(refs) != 2 || refs[0].FileID != "file_b" || refs[1].FileID != "file_a" {
+		t.Fatalf("expected attachment array order, got %#v", refs)
+	}
+}
+
+func TestExtractWebAuthoritativeOrderedRefsSkipsUploadedRefs(t *testing.T) {
+	raw := []byte(`{
+		"messages":[
+			{
+				"message":{
+					"author":{"role":"assistant"},
+					"metadata":{
+						"async_task_type":"image_generation",
+						"attachments":[
+							{"file_id":"file_ref"},
+							{"file_id":"file_out"}
+						]
+					},
+					"content":{"content_type":"multimodal_text","parts":["done"]}
+				}
+			}
+		]
+	}`)
+	refs, ok := extractWebAuthoritativeOrderedRefs(raw, []webUploadMeta{{FileID: "file_ref"}})
+	if !ok {
+		t.Fatalf("expected authoritative refs")
+	}
+	if len(refs) != 1 || refs[0].FileID != "file_out" {
+		t.Fatalf("expected uploaded ref to be excluded, got %#v", refs)
 	}
 }

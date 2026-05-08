@@ -4,6 +4,16 @@
 
 ---
 
+## v0.5.21 — 2026-05-08
+
+### GPT 套图顺序
+
+- 继续修复 `gpt-image-2` ChatGPT Web 多图顺序：收齐图片后增加 settle 阶段，尽可能等待上游 Web 最终展示顺序稳定后再定 `seq`
+- 候选图聚合从按 URL 升级为按 `file_id / sediment_id / normalized download url / data hash` 归并，减少重复候选造成的顺序漂移
+- 新增 authoritative order 提取与对应 Go 单测，优先采用会话消息中 `attachments / citations / conversation_context_citation_metadata / content.parts` 的数组顺序，拿不到时回退到当前稳定顺序
+
+---
+
 ## v0.5.20 — 2026-05-08
 
 ### GPT 套图顺序
