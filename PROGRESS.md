@@ -4,6 +4,16 @@
 
 ---
 
+## v0.5.22 — 2026-05-08
+
+### GPT 单对话套图
+
+- `gpt-image-2` ChatGPT Web 多图任务改为严格单对话模式：一套图只创建 1 个上游 conversation，并且只从这同一个 conversation 拉回结果
+- Web 路由默认强制使用 thinking 模型，非 thinking 的 `web_model` 覆盖将被忽略，避免套图任务退回普通模型
+- 多图 prompt 明确要求“同一对话一次性生成整套图片”；若单个 conversation 最终不足额，任务明确失败，不再自动补开第二个 conversation 拼图
+
+---
+
 ## v0.5.21 — 2026-05-08
 
 ### GPT 套图顺序

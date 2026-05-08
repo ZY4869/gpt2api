@@ -42,8 +42,9 @@ import (
 )
 
 const (
-	defaultBaseURL = "https://api.openai.com"
-	defaultTimeout = 6 * time.Minute
+	defaultBaseURL               = "https://api.openai.com"
+	defaultTimeout               = 6 * time.Minute
+	defaultWebImageThinkingModel = "gpt-5-5-thinking"
 )
 
 // Provider 实现 provider.Provider。
@@ -272,20 +273,20 @@ type webConversationImageState struct {
 }
 
 type webImageCandidate struct {
-	fileID                   string
-	sedimentID               string
-	rawURLs                  []string
-	contentHash              string
+	fileID                       string
+	sedimentID                   string
+	rawURLs                      []string
+	contentHash                  string
 	authoritativeFinalOrderIndex int
-	authoritativeSource      string
-	directOrderIndex         int
-	fileIDOrderIndex         int
-	sedimentIDOrderIndex     int
-	firstSeenPollCount       int
-	downloadSuccessOrder     int
-	dataURL                  string
-	mime                     string
-	mergedInto               *webImageCandidate
+	authoritativeSource          string
+	directOrderIndex             int
+	fileIDOrderIndex             int
+	sedimentIDOrderIndex         int
+	firstSeenPollCount           int
+	downloadSuccessOrder         int
+	dataURL                      string
+	mime                         string
+	mergedInto                   *webImageCandidate
 }
 
 type webImageCandidatePool struct {
@@ -304,8 +305,9 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 	}
 	size := imageSize(req.Params, "1024x1024")
 	ratio := webRatioFromSize(size, strParam(req.Params, "ratio", strParam(req.Params, "aspect_ratio", "1:1")))
-	prompt := webImagePromptV2(req.Prompt, ratio, size)
+	prompt := webImagePromptV2(req.Prompt, ratio, size, count)
 	webModel := webImageModelSlug(req)
+	conversationLimit, requireCompleteSet := webImageConversationPlan(count)
 	client, err := p.httpClient(req.ProxyURL)
 	if err != nil {
 		return nil, err
@@ -316,11 +318,15 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		Provider: "gpt",
 		Stage:    "web.start",
 		Meta: map[string]any{
-			"route":     "chatgpt_web",
-			"model":     webModel,
-			"ratio":     ratio,
-			"count":     count,
-			"ref_count": len(req.RefAssets),
+			"route":                      "chatgpt_web",
+			"model":                      webModel,
+			"ratio":                      ratio,
+			"count":                      count,
+			"ref_count":                  len(req.RefAssets),
+			"strict_thinking_model":      true,
+			"strict_single_conversation": true,
+			"conversation_limit":         conversationLimit,
+			"require_complete_set":       requireCompleteSet,
 		},
 	})
 	if err := p.webBootstrap(ctx, client, base, req.SolverCookies, fp); err != nil {
@@ -366,176 +372,185 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 	candidatePool := newWebImageCandidatePool()
 	downloadSuccessCounter := 0
 	lastDiag := ""
-	for i := 0; i < count; i++ {
-		conduit, err := p.webPrepareImageConversation(ctx, client, base, fp, req.Credential, req.SolverCookies, reqs, prompt, webModel, refs)
-		if err != nil {
-			logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.prepare", Method: "POST", URL: base + "/backend-api/f/conversation/prepare", Error: err.Error()})
-			return nil, err
+	conduit, err := p.webPrepareImageConversation(ctx, client, base, fp, req.Credential, req.SolverCookies, reqs, prompt, webModel, refs)
+	if err != nil {
+		logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.prepare", Method: "POST", URL: base + "/backend-api/f/conversation/prepare", Error: err.Error()})
+		return nil, err
+	}
+	logUpstream(ctx, req, provider.UpstreamLogEntry{
+		Provider: "gpt",
+		Stage:    "web.prepare",
+		Method:   "POST",
+		URL:      base + "/backend-api/f/conversation/prepare",
+		Meta: map[string]any{
+			"has_conduit":                conduit != "",
+			"strict_single_conversation": true,
+			"conversation_limit":         conversationLimit,
+		},
+	})
+	conversationID, fileIDs, sedimentIDs, directURLs, lastText, err := p.webStartImageGeneration(ctx, client, base, fp, req.Credential, req.SolverCookies, reqs, conduit, prompt, webModel, refs)
+	if err != nil {
+		logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.conversation", Method: "POST", URL: base + "/backend-api/f/conversation", Error: err.Error()})
+		return nil, err
+	}
+	fileIDs, sedimentIDs, directURLs = filterWebGeneratedAssetIDs(fileIDs, sedimentIDs, directURLs, refs)
+	logUpstream(ctx, req, provider.UpstreamLogEntry{
+		Provider:        "gpt",
+		Stage:           "web.conversation",
+		Method:          "POST",
+		URL:             base + "/backend-api/f/conversation",
+		ResponseExcerpt: lastText,
+		Meta: map[string]any{
+			"conversation_id":            conversationID,
+			"file_ids":                   fileIDs,
+			"sediment_ids":               sedimentIDs,
+			"direct_urls":                len(directURLs),
+			"strict_single_conversation": true,
+			"conversation_limit":         conversationLimit,
+		},
+	})
+	var urls, downloadErrs []string
+	state := webConversationImageState{
+		FileIDs:     append([]string(nil), fileIDs...),
+		SedimentIDs: append([]string(nil), sedimentIDs...),
+		DirectURLs:  append([]string(nil), directURLs...),
+	}
+	deadline := webImagePollDeadline(ctx, 9*time.Minute, 15*time.Second)
+	pollCount := 0
+	for {
+		if conversationID != "" {
+			pollState, _ := p.webConversationImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
+			pollCount++
+			addUniqueString(&fileIDs, pollState.FileIDs...)
+			addUniqueString(&sedimentIDs, pollState.SedimentIDs...)
+			addUniqueString(&directURLs, pollState.DirectURLs...)
+			state = mergeWebConversationImageState(state, pollState)
+			if pollCount == 1 || pollCount%6 == 0 {
+				libFileIDs, _ := p.webLibraryImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
+				addUniqueString(&fileIDs, libFileIDs...)
+			}
 		}
-		logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.prepare", Method: "POST", URL: base + "/backend-api/f/conversation/prepare", Meta: map[string]any{"has_conduit": conduit != ""}})
-		conversationID, fileIDs, sedimentIDs, directURLs, lastText, err := p.webStartImageGeneration(ctx, client, base, fp, req.Credential, req.SolverCookies, reqs, conduit, prompt, webModel, refs)
-		if err != nil {
-			logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.conversation", Method: "POST", URL: base + "/backend-api/f/conversation", Error: err.Error()})
-			return nil, err
+		resolvedURLs := p.webResolveImageURLs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, fileIDs, sedimentIDs, refs)
+		urls = mergeOrderedWebAssetURLs(directURLs, resolvedURLs)
+		state.FileIDs = mergeOrderedUniqueStrings(fileIDs)
+		state.SedimentIDs = mergeOrderedUniqueStrings(sedimentIDs)
+		state.DirectURLs = mergeOrderedWebAssetURLs(directURLs)
+		webApplyAuthoritativeOrder(candidatePool, state.OrderedRefs)
+		if pollCount == 1 || pollCount%12 == 0 {
+			logUpstream(ctx, req, provider.UpstreamLogEntry{
+				Provider:        "gpt",
+				Stage:           "web.poll",
+				ResponseExcerpt: snippet([]byte(lastText), 160),
+				Meta: map[string]any{
+					"poll_count":                 pollCount,
+					"conversation_id":            conversationID,
+					"file_ids":                   len(fileIDs),
+					"sediment_ids":               len(sedimentIDs),
+					"direct_urls":                len(directURLs),
+					"resolved_urls":              len(urls),
+					"download_errors":            len(downloadErrs),
+					"authoritative_order_found":  state.HasAuthoritativeOrder,
+					"authoritative_count":        len(state.OrderedRefs),
+					"strict_single_conversation": true,
+				},
+			})
 		}
-		fileIDs, sedimentIDs, directURLs = filterWebGeneratedAssetIDs(fileIDs, sedimentIDs, directURLs, refs)
-		logUpstream(ctx, req, provider.UpstreamLogEntry{
-			Provider:        "gpt",
-			Stage:           "web.conversation",
-			Method:          "POST",
-			URL:             base + "/backend-api/f/conversation",
-			ResponseExcerpt: lastText,
-			Meta: map[string]any{
-				"conversation_id": conversationID,
-				"file_ids":        fileIDs,
-				"sediment_ids":    sedimentIDs,
-				"direct_urls":     len(directURLs),
-			},
-		})
-		var urls, downloadErrs []string
-		state := webConversationImageState{
-			FileIDs:    append([]string(nil), fileIDs...),
-			SedimentIDs: append([]string(nil), sedimentIDs...),
-			DirectURLs: append([]string(nil), directURLs...),
-		}
-		deadline := webImagePollDeadline(ctx, 9*time.Minute, 15*time.Second)
-		pollCount := 0
-		for {
-			if conversationID != "" {
-				pollState, _ := p.webConversationImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
-				pollCount++
-				addUniqueString(&fileIDs, pollState.FileIDs...)
-				addUniqueString(&sedimentIDs, pollState.SedimentIDs...)
-				addUniqueString(&directURLs, pollState.DirectURLs...)
-				state = mergeWebConversationImageState(state, pollState)
-				if pollCount == 1 || pollCount%6 == 0 {
-					libFileIDs, _ := p.webLibraryImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
-					addUniqueString(&fileIDs, libFileIDs...)
+		for idx, u := range urls {
+			candidate := ensureWebImageCandidate(candidatePool, u)
+			updateWebImageCandidateOrder(candidate, state, idx, pollCount)
+			if candidate.dataURL != "" {
+				continue
+			}
+			dataURL, mime, err := p.webDownloadAsDataURL(ctx, client, base, fp, req.Credential, req.SolverCookies, u)
+			if err != nil {
+				errText := fmt.Sprintf("%s: %v", sanitizeDiagURL(u), err)
+				before := len(downloadErrs)
+				addUniqueString(&downloadErrs, errText)
+				if len(downloadErrs) > before && len(downloadErrs) <= 3 {
+					logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.download", Method: "GET", URL: sanitizeDiagURL(u), Error: errText})
 				}
+				continue
 			}
-			resolvedURLs := p.webResolveImageURLs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, fileIDs, sedimentIDs, refs)
-			// Prefer the model-emitted order from SSE/direct outputs before polled attachment URLs.
-			urls = mergeOrderedWebAssetURLs(directURLs, resolvedURLs)
-			state.FileIDs = mergeOrderedUniqueStrings(fileIDs)
-			state.SedimentIDs = mergeOrderedUniqueStrings(sedimentIDs)
-			state.DirectURLs = mergeOrderedWebAssetURLs(directURLs)
-			webApplyAuthoritativeOrder(candidatePool, state.OrderedRefs)
-			if pollCount == 1 || pollCount%12 == 0 {
-				logUpstream(ctx, req, provider.UpstreamLogEntry{
-					Provider:        "gpt",
-					Stage:           "web.poll",
-					ResponseExcerpt: snippet([]byte(lastText), 160),
-					Meta: map[string]any{
-						"poll_count":      pollCount,
-						"conversation_id": conversationID,
-						"file_ids":        len(fileIDs),
-						"sediment_ids":    len(sedimentIDs),
-						"direct_urls":     len(directURLs),
-						"resolved_urls":   len(urls),
-						"download_errors": len(downloadErrs),
-						"authoritative_order_found": state.HasAuthoritativeOrder,
-						"authoritative_count": len(state.OrderedRefs),
-					},
-				})
-			}
-			for idx, u := range urls {
-				candidate := ensureWebImageCandidate(candidatePool, u)
-				updateWebImageCandidateOrder(candidate, state, idx, pollCount)
-				if candidate.dataURL != "" {
-					continue
-				}
-				dataURL, mime, err := p.webDownloadAsDataURL(ctx, client, base, fp, req.Credential, req.SolverCookies, u)
-				if err != nil {
-					errText := fmt.Sprintf("%s: %v", sanitizeDiagURL(u), err)
-					before := len(downloadErrs)
-					addUniqueString(&downloadErrs, errText)
-					if len(downloadErrs) > before && len(downloadErrs) <= 3 {
-						logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.download", Method: "GET", URL: sanitizeDiagURL(u), Error: errText})
-					}
-					continue
-				}
-				logUpstream(ctx, req, provider.UpstreamLogEntry{
-					Provider: "gpt",
-					Stage:    "web.download",
-					Method:   "GET",
-					URL:      sanitizeDiagURL(u),
-					Meta:     map[string]any{"mime": mime, "poll_count": pollCount},
-				})
-				downloadSuccessCounter++
-				candidate.dataURL = dataURL
-				candidate.mime = mime
-				candidate.downloadSuccessOrder = downloadSuccessCounter
-				candidate.contentHash = webImageContentHash(dataURL)
-				candidate = mergeWebImageCandidateByContentHash(candidatePool, candidate)
-				updateWebImageCandidateOrder(candidate, state, idx, pollCount)
-			}
-			if countWebImageCandidatesWithData(candidatePool) >= count || conversationID == "" || time.Now().After(deadline) {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				lastDiag = webImage2Diag(conversationID, fileIDs, sedimentIDs, directURLs, urls, downloadErrs, lastText)
-				logUpstream(ctx, req, provider.UpstreamLogEntry{
-					Provider:        "gpt",
-					Stage:           "web.wait_timeout",
-					ResponseExcerpt: lastDiag,
-					Error:           ctx.Err().Error(),
-					Meta: map[string]any{
-						"poll_count":      pollCount,
-						"asset_count":     countWebImageCandidatesWithData(candidatePool),
-						"resolved_urls":   len(urls),
-						"download_errors": downloadErrs,
-						"authoritative_order_found": state.HasAuthoritativeOrder,
-						"authoritative_count": len(state.OrderedRefs),
-					},
-				})
-				return nil, fmt.Errorf("gpt image2 web wait: %w", ctx.Err())
-			case <-time.After(5 * time.Second):
-			}
+			logUpstream(ctx, req, provider.UpstreamLogEntry{
+				Provider: "gpt",
+				Stage:    "web.download",
+				Method:   "GET",
+				URL:      sanitizeDiagURL(u),
+				Meta:     map[string]any{"mime": mime, "poll_count": pollCount},
+			})
+			downloadSuccessCounter++
+			candidate.dataURL = dataURL
+			candidate.mime = mime
+			candidate.downloadSuccessOrder = downloadSuccessCounter
+			candidate.contentHash = webImageContentHash(dataURL)
+			candidate = mergeWebImageCandidateByContentHash(candidatePool, candidate)
+			updateWebImageCandidateOrder(candidate, state, idx, pollCount)
 		}
-		settleMeta := map[string]any{
-			"settle_started": false,
-			"settle_completed": false,
-			"settle_poll_count": 0,
-			"authoritative_order_found": state.HasAuthoritativeOrder,
-			"authoritative_count": len(state.OrderedRefs),
-			"fallback_used": false,
-		}
-		if conversationID != "" && count > 1 && countWebImageCandidatesWithData(candidatePool) >= count {
-			settleMeta["settle_started"] = true
-			settledState, settlePollCount, settled := webSettleImageOrder(ctx, p, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs, state, count, deadline)
-			settleMeta["settle_poll_count"] = settlePollCount
-			settleMeta["settle_completed"] = settled
-			settleMeta["authoritative_order_found"] = settledState.HasAuthoritativeOrder
-			settleMeta["authoritative_count"] = len(settledState.OrderedRefs)
-			settleMeta["fallback_used"] = !settledState.HasAuthoritativeOrder || len(settledState.OrderedRefs) < count
-			state = settledState
-			webApplyAuthoritativeOrder(candidatePool, state.OrderedRefs)
-		}
-		lastDiag = webImage2Diag(conversationID, fileIDs, sedimentIDs, directURLs, urls, downloadErrs, lastText)
-		logUpstream(ctx, req, provider.UpstreamLogEntry{
-			Provider:        "gpt",
-			Stage:           "web.resolve",
-			ResponseExcerpt: lastDiag,
-			Meta: map[string]any{
-				"poll_count":      pollCount,
-				"resolved_urls":   len(urls),
-				"download_errors": downloadErrs,
-				"asset_count":     countWebImageCandidatesWithData(candidatePool),
-				"authoritative_order_found": state.HasAuthoritativeOrder,
-				"authoritative_count": len(state.OrderedRefs),
-				"settle_started": settleMeta["settle_started"],
-				"settle_completed": settleMeta["settle_completed"],
-				"settle_poll_count": settleMeta["settle_poll_count"],
-				"fallback_used": settleMeta["fallback_used"],
-			},
-		})
-		if countWebImageCandidatesWithData(candidatePool) == 0 && conversationID == "" && lastText != "" {
-			return nil, fmt.Errorf("gpt image2 web produced text instead of image: %s", snippet([]byte(lastText), 220))
-		}
-		if countWebImageCandidatesWithData(candidatePool) >= count {
+		if countWebImageCandidatesWithData(candidatePool) >= count || conversationID == "" || time.Now().After(deadline) {
 			break
 		}
+		select {
+		case <-ctx.Done():
+			lastDiag = webImage2Diag(conversationID, fileIDs, sedimentIDs, directURLs, urls, downloadErrs, lastText)
+			logUpstream(ctx, req, provider.UpstreamLogEntry{
+				Provider:        "gpt",
+				Stage:           "web.wait_timeout",
+				ResponseExcerpt: lastDiag,
+				Error:           ctx.Err().Error(),
+				Meta: map[string]any{
+					"poll_count":                 pollCount,
+					"asset_count":                countWebImageCandidatesWithData(candidatePool),
+					"resolved_urls":              len(urls),
+					"download_errors":            downloadErrs,
+					"authoritative_order_found":  state.HasAuthoritativeOrder,
+					"authoritative_count":        len(state.OrderedRefs),
+					"strict_single_conversation": true,
+				},
+			})
+			return nil, fmt.Errorf("gpt image2 web wait: %w", ctx.Err())
+		case <-time.After(5 * time.Second):
+		}
+	}
+	settleMeta := map[string]any{
+		"settle_started":            false,
+		"settle_completed":          false,
+		"settle_poll_count":         0,
+		"authoritative_order_found": state.HasAuthoritativeOrder,
+		"authoritative_count":       len(state.OrderedRefs),
+		"fallback_used":             false,
+	}
+	if conversationID != "" && count > 1 && countWebImageCandidatesWithData(candidatePool) >= count {
+		settleMeta["settle_started"] = true
+		settledState, settlePollCount, settled := webSettleImageOrder(ctx, p, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs, state, count, deadline)
+		settleMeta["settle_poll_count"] = settlePollCount
+		settleMeta["settle_completed"] = settled
+		settleMeta["authoritative_order_found"] = settledState.HasAuthoritativeOrder
+		settleMeta["authoritative_count"] = len(settledState.OrderedRefs)
+		settleMeta["fallback_used"] = !settledState.HasAuthoritativeOrder || len(settledState.OrderedRefs) < count
+		state = settledState
+		webApplyAuthoritativeOrder(candidatePool, state.OrderedRefs)
+	}
+	lastDiag = webImage2Diag(conversationID, fileIDs, sedimentIDs, directURLs, urls, downloadErrs, lastText)
+	logUpstream(ctx, req, provider.UpstreamLogEntry{
+		Provider:        "gpt",
+		Stage:           "web.resolve",
+		ResponseExcerpt: lastDiag,
+		Meta: map[string]any{
+			"poll_count":                 pollCount,
+			"resolved_urls":              len(urls),
+			"download_errors":            downloadErrs,
+			"asset_count":                countWebImageCandidatesWithData(candidatePool),
+			"authoritative_order_found":  state.HasAuthoritativeOrder,
+			"authoritative_count":        len(state.OrderedRefs),
+			"settle_started":             settleMeta["settle_started"],
+			"settle_completed":           settleMeta["settle_completed"],
+			"settle_poll_count":          settleMeta["settle_poll_count"],
+			"fallback_used":              settleMeta["fallback_used"],
+			"strict_single_conversation": true,
+		},
+	})
+	if countWebImageCandidatesWithData(candidatePool) == 0 && conversationID == "" && lastText != "" {
+		return nil, fmt.Errorf("gpt image2 web produced text instead of image: %s", snippet([]byte(lastText), 220))
 	}
 	assets := buildOrderedWebAssets(candidatePool, count, width, height, ratio)
 	if len(assets) == 0 {
@@ -545,6 +560,26 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		}
 		logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.failed", ResponseExcerpt: "gpt image2 web returned 0 image"})
 		return nil, fmt.Errorf("gpt image2 web returned 0 image")
+	}
+	if requireCompleteSet && len(assets) < count {
+		errText := fmt.Sprintf("gpt image2 web single conversation returned %d/%d images", len(assets), count)
+		if lastDiag != "" {
+			errText += " (" + lastDiag + ")"
+		}
+		logUpstream(ctx, req, provider.UpstreamLogEntry{
+			Provider:        "gpt",
+			Stage:           "web.failed",
+			ResponseExcerpt: lastDiag,
+			Error:           errText,
+			Meta: map[string]any{
+				"conversation_id":            conversationID,
+				"asset_count":                len(assets),
+				"requested_count":            count,
+				"strict_single_conversation": true,
+				"conversation_limit":         conversationLimit,
+			},
+		})
+		return nil, fmt.Errorf("%s", errText)
 	}
 	return &provider.Result{TaskID: req.TaskID, Assets: assets, Latency: time.Since(start)}, nil
 }
@@ -1738,11 +1773,18 @@ func imageQuality(params map[string]any) string {
 
 func webImageModelSlug(req *provider.Request) string {
 	if req != nil {
-		if v := strParam(req.Params, "web_model", ""); v != "" {
+		if v := strings.TrimSpace(strParam(req.Params, "web_model", "")); v != "" && strings.Contains(strings.ToLower(v), "thinking") {
 			return v
 		}
 	}
-	return "gpt-5-5-thinking"
+	return defaultWebImageThinkingModel
+}
+
+func webImageConversationPlan(count int) (conversationLimit int, requireCompleteSet bool) {
+	if count <= 1 {
+		return 1, false
+	}
+	return 1, true
 }
 
 func webBaseHeaders(fp webFP, token, path, cookie string) map[string]string {
@@ -1833,17 +1875,24 @@ func webImagePrompt(prompt, ratio string) string {
 	return prompt + "\n\n输出图片，宽高比为 " + ratio + "。"
 }
 
-func webImagePromptV2(prompt, ratio, size string) string {
+func webImagePromptV2(prompt, ratio, size string, count int) string {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		prompt = "生成一张高质量图片"
 	}
 	ratio = webRatioFromSize(size, ratio)
+	directives := make([]string, 0, 2)
+	if count > 1 {
+		directives = append(directives, fmt.Sprintf("这是一次单对话连续套图任务。请在同一个对话回复中一次性生成 %d 张彼此不同、风格统一、顺序明确的图片，并按最终展示顺序输出。不要拆成多个批次，不要只返回 1 张，也不要重复同一张图片充数。", count))
+	}
 	ratio = strings.TrimSpace(ratio)
-	if ratio == "" || ratio == "1:1" {
+	if ratio != "" && ratio != "1:1" {
+		directives = append(directives, "将宽高比设为 "+ratio)
+	}
+	if len(directives) == 0 {
 		return prompt
 	}
-	return prompt + "\n\n将宽高比设为 " + ratio
+	return prompt + "\n\n" + strings.Join(directives, "\n")
 }
 
 func webRatioFromSize(size, fallback string) string {
@@ -2524,12 +2573,12 @@ func ensureWebImageCandidate(pool *webImageCandidatePool, rawURL string) *webIma
 		}
 	}
 	c := &webImageCandidate{
-		rawURLs:                     []string{},
+		rawURLs:                      []string{},
 		authoritativeFinalOrderIndex: -1,
-		directOrderIndex:            -1,
-		fileIDOrderIndex:            -1,
-		sedimentIDOrderIndex:        -1,
-		firstSeenPollCount:          -1,
+		directOrderIndex:             -1,
+		fileIDOrderIndex:             -1,
+		sedimentIDOrderIndex:         -1,
+		firstSeenPollCount:           -1,
 	}
 	pool.candidates = append(pool.candidates, c)
 	addWebImageCandidateRawURL(c, rawURL)
@@ -2640,7 +2689,9 @@ func buildOrderedWebAssets(pool *webImageCandidatePool, limit, width, height int
 }
 
 func mergeWebConversationImageState(base, extra webConversationImageState) webConversationImageState {
-	base.OrderedRefs = mergeOrderedWebOrderedRefs(base.OrderedRefs, extra.OrderedRefs)
+	if extra.HasAuthoritativeOrder && len(extra.OrderedRefs) > 0 {
+		base.OrderedRefs = append([]webOrderedRef(nil), extra.OrderedRefs...)
+	}
 	base.FileIDs = mergeOrderedUniqueStrings(base.FileIDs, extra.FileIDs)
 	base.SedimentIDs = mergeOrderedUniqueStrings(base.SedimentIDs, extra.SedimentIDs)
 	base.DirectURLs = mergeOrderedWebAssetURLs(base.DirectURLs, extra.DirectURLs)
@@ -2714,12 +2765,12 @@ func ensureWebImageCandidateForOrderedRef(pool *webImageCandidatePool, ref webOr
 	}
 	if c == nil {
 		c = &webImageCandidate{
-			rawURLs:                     []string{},
+			rawURLs:                      []string{},
 			authoritativeFinalOrderIndex: -1,
-			directOrderIndex:            -1,
-			fileIDOrderIndex:            -1,
-			sedimentIDOrderIndex:        -1,
-			firstSeenPollCount:          -1,
+			directOrderIndex:             -1,
+			fileIDOrderIndex:             -1,
+			sedimentIDOrderIndex:         -1,
+			firstSeenPollCount:           -1,
 		}
 		pool.candidates = append(pool.candidates, c)
 	}

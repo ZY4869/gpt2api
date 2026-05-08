@@ -10,7 +10,7 @@
 [![Forks](https://img.shields.io/github/forks/432539/gpt2api?style=flat-square&logo=github&color=blue)](https://github.com/432539/gpt2api/network/members)
 [![Issues](https://img.shields.io/github/issues/432539/gpt2api?style=flat-square&logo=github)](https://github.com/432539/gpt2api/issues)
 [![Last Commit](https://img.shields.io/github/last-commit/432539/gpt2api?style=flat-square&logo=git&color=success)](https://github.com/432539/gpt2api/commits/main)
-[![Release](https://img.shields.io/badge/release-v0.5.21-brightgreen?style=flat-square)](https://github.com/432539/gpt2api/releases)
+[![Release](https://img.shields.io/badge/release-v0.5.22-brightgreen?style=flat-square)](https://github.com/432539/gpt2api/releases)
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?style=flat-square&logo=go)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react)](https://react.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
@@ -33,7 +33,7 @@
 
 适用场景：私有化 AIGC 服务、白标 SaaS、多账号合规分发、内部团队调用聚合。
 
-> 当前默认版本：`v0.5.21`，作为当前 fork 的发布线；上游 `v2.x` 仍保留为新架构参考基线。
+> 当前默认版本：`v0.5.22`，作为当前 fork 的发布线；上游 `v2.x` 仍保留为新架构参考基线。
 
 ## ✨ 功能特性
 
@@ -275,6 +275,12 @@ pnpm --filter @kleinai/admin dev    # http://localhost:5174
 ## 📝 更新日志
 
 详见 [PROGRESS.md](./PROGRESS.md)。
+
+### v0.5.22（2026-05-08）
+
+- `gpt-image-2` ChatGPT Web 多图链路改为严格单对话模式：一套图只允许创建 1 个上游 conversation，并且只从这 1 个 conversation 拉回整套图片
+- Web 路由默认强制使用 thinking 模型，忽略非 thinking 的 `web_model` 覆盖，避免套图任务退回非思考模型导致稳定性下降
+- 多图 prompt 明确追加“同一对话一次性生成整套图”的约束；当单个 conversation 最终不足额时，任务明确失败，不再偷偷开第二个对话拼图
 
 ### v0.5.21（2026-05-08）
 

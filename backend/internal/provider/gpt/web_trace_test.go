@@ -483,6 +483,36 @@ func TestBuildOrderedWebAssetsAuthoritativeOrderBeatsDirectOrder(t *testing.T) {
 	}
 }
 
+func TestMergeWebConversationImageStateReplacesAuthoritativeSnapshot(t *testing.T) {
+	base := webConversationImageState{
+		OrderedRefs: []webOrderedRef{
+			{FileID: "file_b", Source: "metadata.attachments"},
+			{FileID: "file_a", Source: "metadata.attachments"},
+		},
+		FileIDs:               []string{"file_b", "file_a"},
+		HasAuthoritativeOrder: true,
+	}
+	extra := webConversationImageState{
+		OrderedRefs: []webOrderedRef{
+			{FileID: "file_a", Source: "metadata.attachments"},
+			{FileID: "file_b", Source: "metadata.attachments"},
+		},
+		FileIDs:               []string{"file_a", "file_b"},
+		HasAuthoritativeOrder: true,
+	}
+
+	merged := mergeWebConversationImageState(base, extra)
+	if len(merged.OrderedRefs) != 2 {
+		t.Fatalf("expected 2 ordered refs, got %#v", merged.OrderedRefs)
+	}
+	if merged.OrderedRefs[0].FileID != "file_a" || merged.OrderedRefs[1].FileID != "file_b" {
+		t.Fatalf("expected latest authoritative snapshot to replace prior order, got %#v", merged.OrderedRefs)
+	}
+	if len(merged.FileIDs) != 2 || merged.FileIDs[0] != "file_b" || merged.FileIDs[1] != "file_a" {
+		t.Fatalf("expected non-authoritative file id order to remain first-seen stable, got %#v", merged.FileIDs)
+	}
+}
+
 func TestExtractWebAuthoritativeOrderedRefsPrefersAttachmentArrayOrder(t *testing.T) {
 	raw := []byte(`{
 		"messages":[
@@ -540,5 +570,63 @@ func TestExtractWebAuthoritativeOrderedRefsSkipsUploadedRefs(t *testing.T) {
 	}
 	if len(refs) != 1 || refs[0].FileID != "file_out" {
 		t.Fatalf("expected uploaded ref to be excluded, got %#v", refs)
+	}
+}
+
+func TestWebImageModelSlugDefaultsToThinking(t *testing.T) {
+	if got := webImageModelSlug(nil); got != defaultWebImageThinkingModel {
+		t.Fatalf("expected default thinking model %q, got %q", defaultWebImageThinkingModel, got)
+	}
+}
+
+func TestWebImageModelSlugRejectsNonThinkingOverride(t *testing.T) {
+	req := &provider.Request{
+		Params: map[string]any{
+			"web_model": "gpt-4o",
+		},
+	}
+	if got := webImageModelSlug(req); got != defaultWebImageThinkingModel {
+		t.Fatalf("expected non-thinking override to fall back to %q, got %q", defaultWebImageThinkingModel, got)
+	}
+}
+
+func TestWebImageModelSlugAcceptsThinkingOverride(t *testing.T) {
+	req := &provider.Request{
+		Params: map[string]any{
+			"web_model": "gpt-5-thinking-pro",
+		},
+	}
+	if got := webImageModelSlug(req); got != "gpt-5-thinking-pro" {
+		t.Fatalf("expected thinking override to be preserved, got %q", got)
+	}
+}
+
+func TestWebImageConversationPlanUsesSingleConversationForMultiImage(t *testing.T) {
+	limit, requireCompleteSet := webImageConversationPlan(10)
+	if limit != 1 {
+		t.Fatalf("expected single conversation limit, got %d", limit)
+	}
+	if !requireCompleteSet {
+		t.Fatalf("expected multi-image plan to require complete set")
+	}
+}
+
+func TestWebImageConversationPlanSingleImageIsNonStrict(t *testing.T) {
+	limit, requireCompleteSet := webImageConversationPlan(1)
+	if limit != 1 {
+		t.Fatalf("expected single-image conversation limit 1, got %d", limit)
+	}
+	if requireCompleteSet {
+		t.Fatalf("did not expect single-image plan to require complete set")
+	}
+}
+
+func TestWebImagePromptV2IncludesSingleConversationDirectiveForSetGeneration(t *testing.T) {
+	got := webImagePromptV2("做一个 1-10 儿童插画套图", "4:3", "1152x864", 10)
+	if !strings.Contains(got, "同一个对话回复中一次性生成 10 张") {
+		t.Fatalf("expected single-conversation directive in prompt, got %q", got)
+	}
+	if !strings.Contains(got, "将宽高比设为 4:3") {
+		t.Fatalf("expected ratio directive in prompt, got %q", got)
 	}
 }
