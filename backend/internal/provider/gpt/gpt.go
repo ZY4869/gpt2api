@@ -2552,7 +2552,14 @@ func extractWebMetadataAssetIDs(metadata map[string]any, fileIDs, sedimentIDs *[
 			}
 		}
 	}
-	walkWebMetadataAssetIDs("", metadata, fileIDs, sedimentIDs)
+	appendWebMetadataAssetIDs(metadata["content_references_by_file"], fileIDs, sedimentIDs)
+	appendWebMetadataAssetIDs(metadata["conversation_context_citation_metadata"], fileIDs, sedimentIDs)
+	appendWebMetadataAssetIDs(metadata["image_results"], fileIDs, sedimentIDs)
+	appendWebMetadataAssetIDs(metadata["result"], fileIDs, sedimentIDs)
+}
+
+func appendWebMetadataAssetIDs(v any, fileIDs, sedimentIDs *[]string) {
+	walkWebMetadataAssetIDs("", v, fileIDs, sedimentIDs)
 }
 
 func walkWebMetadataAssetIDs(key string, v any, fileIDs, sedimentIDs *[]string) {

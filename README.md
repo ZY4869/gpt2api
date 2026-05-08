@@ -10,7 +10,7 @@
 [![Forks](https://img.shields.io/github/forks/432539/gpt2api?style=flat-square&logo=github&color=blue)](https://github.com/432539/gpt2api/network/members)
 [![Issues](https://img.shields.io/github/issues/432539/gpt2api?style=flat-square&logo=github)](https://github.com/432539/gpt2api/issues)
 [![Last Commit](https://img.shields.io/github/last-commit/432539/gpt2api?style=flat-square&logo=git&color=success)](https://github.com/432539/gpt2api/commits/main)
-[![Release](https://img.shields.io/badge/release-v0.5.23-brightgreen?style=flat-square)](https://github.com/432539/gpt2api/releases)
+[![Release](https://img.shields.io/badge/release-v0.5.24-brightgreen?style=flat-square)](https://github.com/432539/gpt2api/releases)
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?style=flat-square&logo=go)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react)](https://react.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
@@ -33,7 +33,7 @@
 
 适用场景：私有化 AIGC 服务、白标 SaaS、多账号合规分发、内部团队调用聚合。
 
-> 当前默认版本：`v0.5.23`，作为当前 fork 的发布线；上游 `v2.x` 仍保留为新架构参考基线。
+> 当前默认版本：`v0.5.24`，作为当前 fork 的发布线；上游 `v2.x` 仍保留为新架构参考基线。
 
 ## ✨ 功能特性
 
@@ -275,6 +275,12 @@ pnpm --filter @kleinai/admin dev    # http://localhost:5174
 ## 📝 更新日志
 
 详见 [PROGRESS.md](./PROGRESS.md)。
+
+### v0.5.24（2026-05-08）
+
+- 修复 `Release Build` 在 GitHub Actions 上的 Go 单测顺序漂移问题，避免 `content_references_by_file` 等 metadata 字段因 map 遍历顺序不同导致 CI 偶发失败
+- `gpt-image-2` Web 图片 metadata 提取改为按固定字段顺序收集资产 ID，减少不同运行环境下的顺序抖动
+- 保持多图测试模式与正式链路行为一致，同时让 tag 构建和发布流程重新稳定
 
 ### v0.5.23（2026-05-08）
 
