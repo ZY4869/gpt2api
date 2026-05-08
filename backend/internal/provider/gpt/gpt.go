@@ -369,8 +369,9 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 					addUniqueString(&fileIDs, libFileIDs...)
 				}
 			}
-			urls = p.webResolveImageURLs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, fileIDs, sedimentIDs, refs)
-			addUniqueWebAssetURLs(&urls, directURLs...)
+			resolvedURLs := p.webResolveImageURLs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, fileIDs, sedimentIDs, refs)
+			// Prefer the model-emitted order from SSE/direct outputs before polled attachment URLs.
+			urls = mergeOrderedWebAssetURLs(directURLs, resolvedURLs)
 			if pollCount == 1 || pollCount%12 == 0 {
 				logUpstream(ctx, req, provider.UpstreamLogEntry{
 					Provider:        "gpt",
@@ -1116,10 +1117,10 @@ func (p *Provider) webConversationImageIDs(ctx context.Context, client *http.Cli
 	if resp.StatusCode >= 400 {
 		return nil, nil, nil, fmt.Errorf("gpt image2 web poll %d: %s", resp.StatusCode, snippet(raw, 240))
 	}
-	fileIDs, sedimentIDs := extractWebImageToolIDs(raw)
+	toolFileIDs, toolSedimentIDs := extractWebImageToolIDs(raw)
 	_, rawFileIDs, rawSedimentIDs, directURLs := extractWebImageIDs(string(raw))
-	addUniqueString(&fileIDs, rawFileIDs...)
-	addUniqueString(&sedimentIDs, rawSedimentIDs...)
+	fileIDs := mergeOrderedUniqueStrings(rawFileIDs, toolFileIDs)
+	sedimentIDs := mergeOrderedUniqueStrings(rawSedimentIDs, toolSedimentIDs)
 	fileIDs, sedimentIDs, directURLs = filterWebGeneratedAssetIDs(fileIDs, sedimentIDs, directURLs, refs)
 	return fileIDs, sedimentIDs, directURLs, nil
 }
@@ -2209,12 +2210,28 @@ func addUniqueString(dst *[]string, vals ...string) {
 	}
 }
 
+func mergeOrderedUniqueStrings(groups ...[]string) []string {
+	out := make([]string, 0)
+	for _, group := range groups {
+		addUniqueString(&out, group...)
+	}
+	return out
+}
+
 func addUniqueWebAssetURLs(dst *[]string, vals ...string) {
 	for _, v := range vals {
 		if isGeneratedWebAssetURL(v) {
 			addUniqueString(dst, v)
 		}
 	}
+}
+
+func mergeOrderedWebAssetURLs(groups ...[]string) []string {
+	out := make([]string, 0)
+	for _, group := range groups {
+		addUniqueWebAssetURLs(&out, group...)
+	}
+	return out
 }
 
 func isGeneratedWebAssetURL(rawURL string) bool {

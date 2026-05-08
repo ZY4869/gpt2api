@@ -305,3 +305,43 @@ func TestAppendUniqueWebAssetSkipsDuplicateDataURL(t *testing.T) {
 		t.Fatalf("expected distinct asset to be appended, got added=%v len=%d", added, len(assets))
 	}
 }
+
+func TestMergeOrderedWebAssetURLsPrefersDirectOrder(t *testing.T) {
+	got := mergeOrderedWebAssetURLs(
+		[]string{
+			"/backend-api/files/download/file_direct_2?conversation_id=conv_1&inline=false",
+			"/backend-api/files/download/file_direct_1?conversation_id=conv_1&inline=false",
+		},
+		[]string{
+			"/backend-api/files/download/file_direct_1?conversation_id=conv_1&inline=false",
+			"/backend-api/files/download/file_direct_2?conversation_id=conv_1&inline=false",
+			"/backend-api/files/download/file_poll_3?conversation_id=conv_1&inline=false",
+		},
+	)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 urls, got %#v", got)
+	}
+	if !strings.Contains(got[0], "file_direct_2") || !strings.Contains(got[1], "file_direct_1") || !strings.Contains(got[2], "file_poll_3") {
+		t.Fatalf("unexpected merged order %#v", got)
+	}
+}
+
+func TestParseWebImageSSEPreservesDirectURLOrder(t *testing.T) {
+	raw := strings.NewReader(strings.Join([]string{
+		`data: {"conversation_id":"conv_order","first":"\/backend-api\/files\/download\/file_raw_b?conversation_id=conv_order&inline=false"}`,
+		"",
+		`data: {"conversation_id":"conv_order","second":"\/backend-api\/files\/download\/file_raw_a?conversation_id=conv_order&inline=false"}`,
+		"",
+	}, "\n"))
+
+	_, fileIDs, sedimentIDs, directURLs, _, err := parseWebImageSSE(raw)
+	if err != nil {
+		t.Fatalf("parseWebImageSSE error: %v", err)
+	}
+	if len(fileIDs) != 0 || len(sedimentIDs) != 0 {
+		t.Fatalf("expected no file/sediment ids, got file=%v sediment=%v", fileIDs, sedimentIDs)
+	}
+	if len(directURLs) != 2 || !strings.Contains(directURLs[0], "file_raw_b") || !strings.Contains(directURLs[1], "file_raw_a") {
+		t.Fatalf("expected direct url order to be preserved, got %#v", directURLs)
+	}
+}
