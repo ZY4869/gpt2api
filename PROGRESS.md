@@ -4,6 +4,16 @@
 
 ---
 
+## v0.5.26 — 2026-05-08
+
+### GPT Web 轮询可观测性
+
+- 为 GPT Web 多图测试模式轮询子请求增加短超时，避免单个上游接口卡住几分钟把整单吊死在 `running`
+- 新增 `web.poll.conversation / web.poll.library / web.poll.resolve` 细粒度日志，直接暴露卡点
+- 新增 provider 单测，锁定轮询子步骤的短超时行为
+
+---
+
 ## v0.5.25 — 2026-05-08
 
 ### GPT Web 测试模式超时

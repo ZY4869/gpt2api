@@ -46,6 +46,7 @@ const (
 	defaultTimeout               = 6 * time.Minute
 	defaultWebImageThinkingModel = "gpt-5-5-thinking"
 	webImageWaitAllThenDownload  = "wait_all_then_download"
+	webImagePollStepTimeout      = 25 * time.Second
 )
 
 // Provider 实现 provider.Provider。
@@ -307,6 +308,11 @@ type webImageTestModeState struct {
 	StrictFailOnIncomplete    bool
 }
 
+type webImagePollStep struct {
+	Name string
+	Kind string
+}
+
 func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request) (*provider.Result, error) {
 	base := strings.TrimRight(req.BaseURL, "/")
 	if base == "" || isCodexBase(base) || strings.Contains(base, "api.openai.com") {
@@ -446,18 +452,26 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 	stableRounds := 0
 	for {
 		if conversationID != "" {
-			pollState, _ := p.webConversationImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
+			pollCtx := webImagePollStepContext(ctx)
+			pollState, pollErr := p.webConversationImageIDs(pollCtx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
+			webLogPollStep(ctx, req, testMode, webImagePollStep{Name: "web.poll.conversation", Kind: "conversation"}, conversationID, nil, pollState, pollErr)
 			pollCount++
-			addUniqueString(&fileIDs, pollState.FileIDs...)
-			addUniqueString(&sedimentIDs, pollState.SedimentIDs...)
-			addUniqueString(&directURLs, pollState.DirectURLs...)
-			state = mergeWebConversationImageState(state, pollState)
-			if pollCount == 1 || pollCount%6 == 0 {
-				libFileIDs, _ := p.webLibraryImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
-				addUniqueString(&fileIDs, libFileIDs...)
+			if pollErr == nil {
+				addUniqueString(&fileIDs, pollState.FileIDs...)
+				addUniqueString(&sedimentIDs, pollState.SedimentIDs...)
+				addUniqueString(&directURLs, pollState.DirectURLs...)
+				state = mergeWebConversationImageState(state, pollState)
+				if pollCount == 1 || pollCount%6 == 0 {
+					libCtx := webImagePollStepContext(ctx)
+					libFileIDs, libErr := p.webLibraryImageIDs(libCtx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
+					webLogPollStep(ctx, req, testMode, webImagePollStep{Name: "web.poll.library", Kind: "library"}, conversationID, map[string]any{"library_file_ids": len(libFileIDs)}, webConversationImageState{}, libErr)
+					addUniqueString(&fileIDs, libFileIDs...)
+				}
 			}
 		}
-		resolvedURLs := p.webResolveImageURLs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, fileIDs, sedimentIDs, refs)
+		resolveCtx := webImagePollStepContext(ctx)
+		resolvedURLs := p.webResolveImageURLs(resolveCtx, client, base, fp, req.Credential, req.SolverCookies, conversationID, fileIDs, sedimentIDs, refs)
+		webLogPollStep(ctx, req, testMode, webImagePollStep{Name: "web.poll.resolve", Kind: "resolve"}, conversationID, map[string]any{"resolved_urls": len(resolvedURLs), "file_ids": len(fileIDs), "sediment_ids": len(sedimentIDs)}, webConversationImageState{}, nil)
 		urls = mergeOrderedWebAssetURLs(directURLs, resolvedURLs)
 		state.FileIDs = mergeOrderedUniqueStrings(fileIDs)
 		state.SedimentIDs = mergeOrderedUniqueStrings(sedimentIDs)
@@ -1939,6 +1953,38 @@ func mergeMeta(dst map[string]any, extras ...map[string]any) map[string]any {
 		}
 	}
 	return dst
+}
+
+func webImagePollStepContext(parent context.Context) context.Context {
+	ctx, _ := context.WithTimeout(parent, webImagePollStepTimeout)
+	return ctx
+}
+
+func webLogPollStep(ctx context.Context, req *provider.Request, mode webImageTestModeState, step webImagePollStep, conversationID string, extras map[string]any, state webConversationImageState, err error) {
+	if !mode.Enabled || step.Name == "" {
+		return
+	}
+	meta := mergeMeta(map[string]any{
+		"conversation_id":           conversationID,
+		"step_kind":                 step.Kind,
+		"file_ids":                  len(state.FileIDs),
+		"sediment_ids":              len(state.SedimentIDs),
+		"direct_urls":               len(state.DirectURLs),
+		"authoritative_order_found": state.HasAuthoritativeOrder,
+		"authoritative_count":       len(state.OrderedRefs),
+	}, webImageTestModeMeta(mode), extras)
+	entry := provider.UpstreamLogEntry{
+		Provider: "gpt",
+		Stage:    step.Name,
+		Meta:     meta,
+	}
+	if err != nil {
+		entry.Error = err.Error()
+		entry.Stage = step.Name + ".failed"
+	} else {
+		entry.Stage = step.Name + ".ok"
+	}
+	logUpstream(ctx, req, entry)
 }
 
 func webBaseHeaders(fp webFP, token, path, cookie string) map[string]string {

@@ -50,3 +50,17 @@ func TestWebImagePollDeadlineUsesThirtyMinutesForWaitAllTestMode(t *testing.T) {
 		t.Fatalf("expected deadline near 30m from now, got %s", got)
 	}
 }
+
+func TestWebImagePollStepContextUsesShortTimeout(t *testing.T) {
+	start := time.Now()
+	ctx := webImagePollStepContext(context.Background())
+	dl, ok := ctx.Deadline()
+	if !ok {
+		t.Fatalf("expected poll step context deadline")
+	}
+	lower := start.Add(webImagePollStepTimeout - 2*time.Second)
+	upper := start.Add(webImagePollStepTimeout + 2*time.Second)
+	if dl.Before(lower) || dl.After(upper) {
+		t.Fatalf("expected deadline near short step timeout, got %s", dl)
+	}
+}
