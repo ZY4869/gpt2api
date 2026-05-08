@@ -603,7 +603,7 @@ func parseBool(v string) bool {
 }
 
 func openAIResultBaseURL(c *gin.Context) string {
-	if c == nil || c.Request == nil || c.Request.Host == "" {
+	if c == nil || c.Request == nil {
 		return ""
 	}
 	scheme := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto"))
@@ -614,7 +614,14 @@ func openAIResultBaseURL(c *gin.Context) string {
 			scheme = "http"
 		}
 	}
-	return scheme + "://" + c.Request.Host
+	host := strings.TrimSpace(c.GetHeader("X-Forwarded-Host"))
+	if host == "" {
+		host = c.Request.Host
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
 }
 
 func (h *OpenAIHandler) authorizeTaskResult(c *gin.Context, taskID string, kind provider.Kind) (*model.GenerationTask, []*model.GenerationResult, bool) {

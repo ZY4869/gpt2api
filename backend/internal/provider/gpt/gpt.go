@@ -326,6 +326,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 	}
 	width, height := parseSize(size)
 	assets := make([]provider.Asset, 0, count)
+	seenAssetURLs := map[string]bool{}
 	lastDiag := ""
 	for i := 0; i < count && len(assets) < count; i++ {
 		conduit, err := p.webPrepareImageConversation(ctx, client, base, fp, req.Credential, req.SolverCookies, reqs, prompt, webModel, refs)
@@ -404,6 +405,10 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 					URL:      sanitizeDiagURL(u),
 					Meta:     map[string]any{"mime": mime, "poll_count": pollCount},
 				})
+				if seenAssetURLs[dataURL] {
+					continue
+				}
+				seenAssetURLs[dataURL] = true
 				assets = append(assets, provider.Asset{
 					URL:    dataURL,
 					Width:  width,
@@ -462,6 +467,18 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		return nil, fmt.Errorf("gpt image2 web returned 0 image")
 	}
 	return &provider.Result{TaskID: req.TaskID, Assets: assets, Latency: time.Since(start)}, nil
+}
+
+func appendUniqueWebAsset(assets []provider.Asset, seen map[string]bool, asset provider.Asset) ([]provider.Asset, bool) {
+	key := strings.TrimSpace(asset.URL)
+	if key == "" {
+		return assets, false
+	}
+	if seen[key] {
+		return assets, false
+	}
+	seen[key] = true
+	return append(assets, asset), true
 }
 
 func webImagePollDeadline(ctx context.Context, maxWindow, safetyMargin time.Duration) time.Time {

@@ -3,6 +3,8 @@ package gpt
 import (
 	"strings"
 	"testing"
+
+	"github.com/kleinai/backend/internal/provider"
 )
 
 func TestExtractWebImageToolIDs(t *testing.T) {
@@ -282,5 +284,24 @@ func TestExtractWebImageDirectURLsAcceptsRelativeBackendDownloadPaths(t *testing
 	}
 	if urls[2] != "/backend-api/estuary/content?id=file_est123xyz&ts=1&p=fs" {
 		t.Fatalf("unexpected third backend url %#v", urls[2])
+	}
+}
+
+func TestAppendUniqueWebAssetSkipsDuplicateDataURL(t *testing.T) {
+	seen := map[string]bool{}
+	assets := make([]provider.Asset, 0, 2)
+
+	var added bool
+	assets, added = appendUniqueWebAsset(assets, seen, provider.Asset{URL: "data:image/png;base64,AAA", Width: 1024, Height: 1024})
+	if !added || len(assets) != 1 {
+		t.Fatalf("expected first asset to be appended, got added=%v len=%d", added, len(assets))
+	}
+	assets, added = appendUniqueWebAsset(assets, seen, provider.Asset{URL: "data:image/png;base64,AAA", Width: 1024, Height: 1024})
+	if added || len(assets) != 1 {
+		t.Fatalf("expected duplicate asset to be skipped, got added=%v len=%d", added, len(assets))
+	}
+	assets, added = appendUniqueWebAsset(assets, seen, provider.Asset{URL: "data:image/png;base64,BBB", Width: 1024, Height: 1024})
+	if !added || len(assets) != 2 {
+		t.Fatalf("expected distinct asset to be appended, got added=%v len=%d", added, len(assets))
 	}
 }
