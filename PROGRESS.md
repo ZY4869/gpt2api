@@ -4,6 +4,16 @@
 
 ---
 
+## v0.5.23 — 2026-05-08
+
+### GPT 套图测试模式
+
+- `gpt-image-2` ChatGPT Web 多图链路新增隐藏测试模式：`params.web_test_mode = "wait_all_then_download"`
+- 测试模式下不再在轮询阶段下载普通图片 URL，而是持续等待同一 conversation 中整套图和 authoritative final order 完整且稳定后，再按最终顺序统一下载
+- 若 `30` 分钟内最终顺序仍不完整、不稳定，或统一下载后唯一图片数不足请求数量，则任务直接失败，不回退旧逻辑
+
+---
+
 ## v0.5.22 — 2026-05-08
 
 ### GPT 单对话套图

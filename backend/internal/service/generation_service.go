@@ -359,6 +359,9 @@ func generationTimeoutForTask(t *model.GenerationTask, params map[string]any) ti
 		if t.Count > 4 {
 			return 30 * time.Minute
 		}
+		if strings.EqualFold(strParamAny(params, "web_test_mode", ""), "wait_all_then_download") {
+			return 30 * time.Minute
+		}
 		if shouldUseGPTWebRoute(params) {
 			return 10 * time.Minute
 		}

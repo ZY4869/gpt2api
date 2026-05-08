@@ -630,3 +630,95 @@ func TestWebImagePromptV2IncludesSingleConversationDirectiveForSetGeneration(t *
 		t.Fatalf("expected ratio directive in prompt, got %q", got)
 	}
 }
+
+func TestWebImageTestModeRequiresGPTWebMultiImage(t *testing.T) {
+	req := &provider.Request{
+		ModelCode: "gpt-image-2",
+		Count:     10,
+		Params:    map[string]any{"web_test_mode": "wait_all_then_download"},
+	}
+	mode := webImageTestMode(req)
+	if !mode.Enabled {
+		t.Fatalf("expected test mode to be enabled")
+	}
+	if !mode.DownloadDeferred || !mode.StrictFailOnIncomplete {
+		t.Fatalf("unexpected test mode state %#v", mode)
+	}
+}
+
+func TestWebImageTestModeIgnoresSingleImageRequests(t *testing.T) {
+	req := &provider.Request{
+		ModelCode: "gpt-image-2",
+		Count:     1,
+		Params:    map[string]any{"web_test_mode": "wait_all_then_download"},
+	}
+	if mode := webImageTestMode(req); mode.Enabled {
+		t.Fatalf("expected single-image request to ignore test mode")
+	}
+}
+
+func TestWebUpdateCandidatePoolFromResolvedURLsDoesNotDownload(t *testing.T) {
+	pool := newWebImageCandidatePool()
+	state := webConversationImageState{
+		DirectURLs: []string{"/backend-api/files/download/file_a"},
+		FileIDs:    []string{"file_a"},
+	}
+	webUpdateCandidatePoolFromResolvedURLs(pool, state, []string{"/backend-api/files/download/file_a"}, 1)
+	if countWebImageCandidates(pool) != 1 {
+		t.Fatalf("expected one candidate")
+	}
+	if countWebImageCandidatesWithData(pool) != 0 {
+		t.Fatalf("expected deferred collection to avoid downloading data")
+	}
+}
+
+func TestWebAuthoritativeStableRoundsRequiresTwoMatchingSnapshots(t *testing.T) {
+	state := webConversationImageState{
+		OrderedRefs: []webOrderedRef{
+			{FileID: "file_1", Source: "metadata.attachments"},
+			{FileID: "file_2", Source: "metadata.attachments"},
+		},
+		HasAuthoritativeOrder: true,
+	}
+	snapshot, rounds := webAuthoritativeStableRounds(state, 2, "", 0)
+	if snapshot == "" || rounds != 1 {
+		t.Fatalf("expected first snapshot to start stability tracking, got snapshot=%q rounds=%d", snapshot, rounds)
+	}
+	snapshot, rounds = webAuthoritativeStableRounds(state, 2, snapshot, rounds)
+	if rounds != 2 {
+		t.Fatalf("expected second identical snapshot to mark stable, got %d", rounds)
+	}
+}
+
+func TestBuildFinalOrderedWebCandidatesUsesAuthoritativeOrder(t *testing.T) {
+	pool := newWebImageCandidatePool()
+	a := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_a", Source: "metadata.attachments"})
+	b := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_b", Source: "metadata.attachments"})
+	a.directOrderIndex = 1
+	b.directOrderIndex = 0
+	webApplyAuthoritativeOrder(pool, []webOrderedRef{
+		{FileID: "file_a", Source: "metadata.attachments"},
+		{FileID: "file_b", Source: "metadata.attachments"},
+	})
+	got := buildFinalOrderedWebCandidates(pool, 10)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(got))
+	}
+	if got[0].fileID != "file_a" || got[1].fileID != "file_b" {
+		t.Fatalf("expected authoritative order, got %#v %#v", got[0], got[1])
+	}
+}
+
+func TestFirstWebImageDownloadURLPrefersFileIDThenRawURL(t *testing.T) {
+	candidate := &webImageCandidate{
+		fileID:  "file_123",
+		rawURLs: []string{"/backend-api/files/download/file_999"},
+	}
+	if got := firstWebImageDownloadURL(candidate); got != "/backend-api/files/download/file_123" {
+		t.Fatalf("expected file-id download URL, got %q", got)
+	}
+	candidate.fileID = ""
+	if got := firstWebImageDownloadURL(candidate); got != "/backend-api/files/download/file_999" {
+		t.Fatalf("expected fallback raw URL, got %q", got)
+	}
+}

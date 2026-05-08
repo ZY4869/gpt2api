@@ -37,6 +37,12 @@ func TestGenerationTimeoutForTask(t *testing.T) {
 			params: map[string]any{"resolution": "1K"},
 			want:   30 * time.Minute,
 		},
+		{
+			name:   "gpt image2 web wait-all test mode",
+			task:   &model.GenerationTask{Kind: string(provider.KindImage), Provider: model.ProviderGPT, ModelCode: "gpt-image-2", Count: 4},
+			params: map[string]any{"resolution": "1K", "web_test_mode": "wait_all_then_download"},
+			want:   30 * time.Minute,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

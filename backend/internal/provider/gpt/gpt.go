@@ -45,6 +45,7 @@ const (
 	defaultBaseURL               = "https://api.openai.com"
 	defaultTimeout               = 6 * time.Minute
 	defaultWebImageThinkingModel = "gpt-5-5-thinking"
+	webImageWaitAllThenDownload  = "wait_all_then_download"
 )
 
 // Provider 实现 provider.Provider。
@@ -294,6 +295,18 @@ type webImageCandidatePool struct {
 	candidates []*webImageCandidate
 }
 
+type webImageTestModeState struct {
+	Enabled                   bool
+	Mode                      string
+	DownloadDeferred          bool
+	CollectionCandidateCount  int
+	AuthoritativeComplete     bool
+	AuthoritativeStableRounds int
+	FinalDownloadStarted      bool
+	FinalDownloadSeqCount     int
+	StrictFailOnIncomplete    bool
+}
+
 func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request) (*provider.Result, error) {
 	base := strings.TrimRight(req.BaseURL, "/")
 	if base == "" || isCodexBase(base) || strings.Contains(base, "api.openai.com") {
@@ -308,6 +321,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 	prompt := webImagePromptV2(req.Prompt, ratio, size, count)
 	webModel := webImageModelSlug(req)
 	conversationLimit, requireCompleteSet := webImageConversationPlan(count)
+	testMode := webImageTestMode(req)
 	client, err := p.httpClient(req.ProxyURL)
 	if err != nil {
 		return nil, err
@@ -329,6 +343,13 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			"require_complete_set":       requireCompleteSet,
 		},
 	})
+	if testMeta := webImageTestModeMeta(testMode); len(testMeta) > 0 {
+		logUpstream(ctx, req, provider.UpstreamLogEntry{
+			Provider: "gpt",
+			Stage:    "web.start",
+			Meta:     mergeMeta(map[string]any{}, testMeta),
+		})
+	}
 	if err := p.webBootstrap(ctx, client, base, req.SolverCookies, fp); err != nil {
 		logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.bootstrap", Method: "GET", URL: base + "/", Error: err.Error()})
 		return nil, err
@@ -417,6 +438,8 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 	}
 	deadline := webImagePollDeadline(ctx, 9*time.Minute, 15*time.Second)
 	pollCount := 0
+	snapshot := authoritativeSnapshotKey(state.OrderedRefs, count)
+	stableRounds := 0
 	for {
 		if conversationID != "" {
 			pollState, _ := p.webConversationImageIDs(ctx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
@@ -436,12 +459,17 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		state.SedimentIDs = mergeOrderedUniqueStrings(sedimentIDs)
 		state.DirectURLs = mergeOrderedWebAssetURLs(directURLs)
 		webApplyAuthoritativeOrder(candidatePool, state.OrderedRefs)
+		webUpdateCandidatePoolFromResolvedURLs(candidatePool, state, urls, pollCount)
+		testMode.CollectionCandidateCount = countWebImageCandidates(candidatePool)
+		testMode.AuthoritativeComplete = webAuthoritativeOrderComplete(state, count)
+		snapshot, stableRounds = webAuthoritativeStableRounds(state, count, snapshot, stableRounds)
+		testMode.AuthoritativeStableRounds = stableRounds
 		if pollCount == 1 || pollCount%12 == 0 {
 			logUpstream(ctx, req, provider.UpstreamLogEntry{
 				Provider:        "gpt",
 				Stage:           "web.poll",
 				ResponseExcerpt: snippet([]byte(lastText), 160),
-				Meta: map[string]any{
+				Meta: mergeMeta(map[string]any{
 					"poll_count":                 pollCount,
 					"conversation_id":            conversationID,
 					"file_ids":                   len(fileIDs),
@@ -452,13 +480,16 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 					"authoritative_order_found":  state.HasAuthoritativeOrder,
 					"authoritative_count":        len(state.OrderedRefs),
 					"strict_single_conversation": true,
-				},
+				}, webImageTestModeMeta(testMode)),
 			})
 		}
 		for idx, u := range urls {
 			candidate := ensureWebImageCandidate(candidatePool, u)
 			updateWebImageCandidateOrder(candidate, state, idx, pollCount)
 			if candidate.dataURL != "" {
+				continue
+			}
+			if testMode.Enabled && !strings.HasPrefix(strings.TrimSpace(u), "data:") {
 				continue
 			}
 			dataURL, mime, err := p.webDownloadAsDataURL(ctx, client, base, fp, req.Credential, req.SolverCookies, u)
@@ -486,7 +517,11 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			candidate = mergeWebImageCandidateByContentHash(candidatePool, candidate)
 			updateWebImageCandidateOrder(candidate, state, idx, pollCount)
 		}
-		if countWebImageCandidatesWithData(candidatePool) >= count || conversationID == "" || time.Now().After(deadline) {
+		if testMode.Enabled {
+			if (testMode.CollectionCandidateCount >= count && testMode.AuthoritativeComplete && stableRounds >= 2) || conversationID == "" || time.Now().After(deadline) {
+				break
+			}
+		} else if countWebImageCandidatesWithData(candidatePool) >= count || conversationID == "" || time.Now().After(deadline) {
 			break
 		}
 		select {
@@ -497,7 +532,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 				Stage:           "web.wait_timeout",
 				ResponseExcerpt: lastDiag,
 				Error:           ctx.Err().Error(),
-				Meta: map[string]any{
+				Meta: mergeMeta(map[string]any{
 					"poll_count":                 pollCount,
 					"asset_count":                countWebImageCandidatesWithData(candidatePool),
 					"resolved_urls":              len(urls),
@@ -505,7 +540,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 					"authoritative_order_found":  state.HasAuthoritativeOrder,
 					"authoritative_count":        len(state.OrderedRefs),
 					"strict_single_conversation": true,
-				},
+				}, webImageTestModeMeta(testMode)),
 			})
 			return nil, fmt.Errorf("gpt image2 web wait: %w", ctx.Err())
 		case <-time.After(5 * time.Second):
@@ -519,7 +554,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		"authoritative_count":       len(state.OrderedRefs),
 		"fallback_used":             false,
 	}
-	if conversationID != "" && count > 1 && countWebImageCandidatesWithData(candidatePool) >= count {
+	if !testMode.Enabled && conversationID != "" && count > 1 && countWebImageCandidatesWithData(candidatePool) >= count {
 		settleMeta["settle_started"] = true
 		settledState, settlePollCount, settled := webSettleImageOrder(ctx, p, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs, state, count, deadline)
 		settleMeta["settle_poll_count"] = settlePollCount
@@ -530,12 +565,18 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		state = settledState
 		webApplyAuthoritativeOrder(candidatePool, state.OrderedRefs)
 	}
+	if testMode.Enabled {
+		settleMeta["settle_started"] = true
+		settleMeta["settle_completed"] = testMode.AuthoritativeComplete && stableRounds >= 2
+		settleMeta["settle_poll_count"] = pollCount
+		settleMeta["fallback_used"] = !settleMeta["settle_completed"].(bool)
+	}
 	lastDiag = webImage2Diag(conversationID, fileIDs, sedimentIDs, directURLs, urls, downloadErrs, lastText)
 	logUpstream(ctx, req, provider.UpstreamLogEntry{
 		Provider:        "gpt",
 		Stage:           "web.resolve",
 		ResponseExcerpt: lastDiag,
-		Meta: map[string]any{
+		Meta: mergeMeta(map[string]any{
 			"poll_count":                 pollCount,
 			"resolved_urls":              len(urls),
 			"download_errors":            downloadErrs,
@@ -547,10 +588,75 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			"settle_poll_count":          settleMeta["settle_poll_count"],
 			"fallback_used":              settleMeta["fallback_used"],
 			"strict_single_conversation": true,
-		},
+		}, webImageTestModeMeta(testMode)),
 	})
 	if countWebImageCandidatesWithData(candidatePool) == 0 && conversationID == "" && lastText != "" {
 		return nil, fmt.Errorf("gpt image2 web produced text instead of image: %s", snippet([]byte(lastText), 220))
+	}
+	if testMode.Enabled {
+		if testMode.CollectionCandidateCount < count || !testMode.AuthoritativeComplete || stableRounds < 2 {
+			errText := fmt.Sprintf("gpt image2 web test mode did not reach complete final set (%d/%d authoritative=%v stable_rounds=%d)", testMode.CollectionCandidateCount, count, testMode.AuthoritativeComplete, stableRounds)
+			logUpstream(ctx, req, provider.UpstreamLogEntry{
+				Provider:        "gpt",
+				Stage:           "web.failed",
+				ResponseExcerpt: lastDiag,
+				Error:           errText,
+				Meta:            mergeMeta(map[string]any{"conversation_id": conversationID}, webImageTestModeMeta(testMode)),
+			})
+			return nil, fmt.Errorf("%s", errText)
+		}
+		finalCandidates := buildFinalOrderedWebCandidates(candidatePool, count)
+		testMode.FinalDownloadStarted = true
+		testMode.FinalDownloadSeqCount = len(finalCandidates)
+		for seq, candidate := range finalCandidates {
+			candidate = canonicalWebImageCandidate(candidate)
+			if candidate == nil {
+				continue
+			}
+			if candidate.dataURL != "" {
+				continue
+			}
+			downloadURL := firstWebImageDownloadURL(candidate)
+			if downloadURL == "" {
+				continue
+			}
+			dataURL, mime, err := p.webDownloadAsDataURL(ctx, client, base, fp, req.Credential, req.SolverCookies, downloadURL)
+			if err != nil {
+				errText := fmt.Sprintf("%s: %v", sanitizeDiagURL(downloadURL), err)
+				logUpstream(ctx, req, provider.UpstreamLogEntry{
+					Provider: "gpt",
+					Stage:    "web.download",
+					Method:   "GET",
+					URL:      sanitizeDiagURL(downloadURL),
+					Error:    errText,
+					Meta:     mergeMeta(map[string]any{"final_download_seq": seq}, webImageTestModeMeta(testMode)),
+				})
+				return nil, fmt.Errorf("gpt image2 web test mode final download failed: %s", errText)
+			}
+			downloadSuccessCounter++
+			candidate.dataURL = dataURL
+			candidate.mime = mime
+			candidate.downloadSuccessOrder = downloadSuccessCounter
+			candidate.contentHash = webImageContentHash(dataURL)
+			logUpstream(ctx, req, provider.UpstreamLogEntry{
+				Provider: "gpt",
+				Stage:    "web.download",
+				Method:   "GET",
+				URL:      sanitizeDiagURL(downloadURL),
+				Meta:     mergeMeta(map[string]any{"mime": mime, "final_download_seq": seq}, webImageTestModeMeta(testMode)),
+			})
+		}
+		if countWebImageCandidatesWithData(candidatePool) < count {
+			errText := fmt.Sprintf("gpt image2 web test mode final download returned %d/%d images", countWebImageCandidatesWithData(candidatePool), count)
+			logUpstream(ctx, req, provider.UpstreamLogEntry{
+				Provider:        "gpt",
+				Stage:           "web.failed",
+				ResponseExcerpt: lastDiag,
+				Error:           errText,
+				Meta:            mergeMeta(map[string]any{"conversation_id": conversationID}, webImageTestModeMeta(testMode)),
+			})
+			return nil, fmt.Errorf("%s", errText)
+		}
 	}
 	assets := buildOrderedWebAssets(candidatePool, count, width, height, ratio)
 	if len(assets) == 0 {
@@ -1787,6 +1893,50 @@ func webImageConversationPlan(count int) (conversationLimit int, requireComplete
 	return 1, true
 }
 
+func webImageTestMode(req *provider.Request) webImageTestModeState {
+	if req == nil || req.Count <= 1 || !isGPTImage2(req.ModelCode) || !shouldUseWebImage2(req) {
+		return webImageTestModeState{}
+	}
+	mode := strings.TrimSpace(strParam(req.Params, "web_test_mode", ""))
+	if mode != webImageWaitAllThenDownload {
+		return webImageTestModeState{}
+	}
+	return webImageTestModeState{
+		Enabled:                true,
+		Mode:                   mode,
+		DownloadDeferred:       true,
+		StrictFailOnIncomplete: true,
+	}
+}
+
+func webImageTestModeMeta(mode webImageTestModeState) map[string]any {
+	if !mode.Enabled {
+		return nil
+	}
+	return map[string]any{
+		"web_test_mode":               mode.Mode,
+		"download_deferred":           mode.DownloadDeferred,
+		"collection_candidate_count":  mode.CollectionCandidateCount,
+		"authoritative_complete":      mode.AuthoritativeComplete,
+		"authoritative_stable_rounds": mode.AuthoritativeStableRounds,
+		"final_download_started":      mode.FinalDownloadStarted,
+		"final_download_seq_count":    mode.FinalDownloadSeqCount,
+		"strict_fail_on_incomplete":   mode.StrictFailOnIncomplete,
+	}
+}
+
+func mergeMeta(dst map[string]any, extras ...map[string]any) map[string]any {
+	if dst == nil {
+		dst = map[string]any{}
+	}
+	for _, extra := range extras {
+		for k, v := range extra {
+			dst[k] = v
+		}
+	}
+	return dst
+}
+
 func webBaseHeaders(fp webFP, token, path, cookie string) map[string]string {
 	h := map[string]string{
 		"User-Agent":                 fp.UserAgent,
@@ -2747,6 +2897,87 @@ func webApplyAuthoritativeOrder(pool *webImageCandidatePool, refs []webOrderedRe
 		c.authoritativeFinalOrderIndex = idx
 		c.authoritativeSource = ref.Source
 	}
+}
+
+func countWebImageCandidates(pool *webImageCandidatePool) int {
+	if pool == nil {
+		return 0
+	}
+	count := 0
+	seen := map[*webImageCandidate]bool{}
+	for _, c := range pool.candidates {
+		c = canonicalWebImageCandidate(c)
+		if c == nil || seen[c] {
+			continue
+		}
+		seen[c] = true
+		count++
+	}
+	return count
+}
+
+func webAuthoritativeOrderComplete(state webConversationImageState, count int) bool {
+	return count > 0 && state.HasAuthoritativeOrder && len(state.OrderedRefs) >= count
+}
+
+func webAuthoritativeStableRounds(state webConversationImageState, count int, snapshot string, stableRounds int) (string, int) {
+	nextSnapshot := authoritativeSnapshotKey(state.OrderedRefs, count)
+	if nextSnapshot == "" {
+		return "", 0
+	}
+	if nextSnapshot == snapshot {
+		return snapshot, stableRounds + 1
+	}
+	return nextSnapshot, 1
+}
+
+func webUpdateCandidatePoolFromResolvedURLs(pool *webImageCandidatePool, state webConversationImageState, urls []string, pollCount int) {
+	for idx, u := range urls {
+		candidate := ensureWebImageCandidate(pool, u)
+		updateWebImageCandidateOrder(candidate, state, idx, pollCount)
+	}
+}
+
+func buildFinalOrderedWebCandidates(pool *webImageCandidatePool, limit int) []*webImageCandidate {
+	if pool == nil {
+		return nil
+	}
+	candidates := make([]*webImageCandidate, 0, len(pool.candidates))
+	seen := map[*webImageCandidate]bool{}
+	for _, c := range pool.candidates {
+		c = canonicalWebImageCandidate(c)
+		if c == nil || seen[c] {
+			continue
+		}
+		seen[c] = true
+		candidates = append(candidates, c)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return compareWebImageCandidate(candidates[i], candidates[j])
+	})
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates
+}
+
+func firstWebImageDownloadURL(candidate *webImageCandidate) string {
+	candidate = canonicalWebImageCandidate(candidate)
+	if candidate == nil {
+		return ""
+	}
+	if candidate.fileID != "" {
+		return "/backend-api/files/download/" + candidate.fileID
+	}
+	if candidate.sedimentID != "" {
+		return "/backend-api/files/" + candidate.sedimentID + "/download"
+	}
+	for _, raw := range candidate.rawURLs {
+		if isGeneratedWebAssetURL(raw) {
+			return raw
+		}
+	}
+	return ""
 }
 
 func ensureWebImageCandidateForOrderedRef(pool *webImageCandidatePool, ref webOrderedRef) *webImageCandidate {
