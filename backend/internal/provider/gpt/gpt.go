@@ -436,7 +436,11 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		SedimentIDs: append([]string(nil), sedimentIDs...),
 		DirectURLs:  append([]string(nil), directURLs...),
 	}
-	deadline := webImagePollDeadline(ctx, 9*time.Minute, 15*time.Second)
+	pollWindow := 9 * time.Minute
+	if testMode.Enabled {
+		pollWindow = 30 * time.Minute
+	}
+	deadline := webImagePollDeadline(ctx, pollWindow, 15*time.Second)
 	pollCount := 0
 	snapshot := authoritativeSnapshotKey(state.OrderedRefs, count)
 	stableRounds := 0

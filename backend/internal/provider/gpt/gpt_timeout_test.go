@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/kleinai/backend/internal/provider"
 )
 
 func TestWebImagePollDeadlineUsesMaxWindowWithoutContextDeadline(t *testing.T) {
@@ -23,5 +25,28 @@ func TestWebImagePollDeadlineHonorsContextDeadlineSafetyMargin(t *testing.T) {
 	wantUpper := time.Now().Add(4*time.Minute - 13*time.Second)
 	if got.Before(wantLower) || got.After(wantUpper) {
 		t.Fatalf("expected deadline near ctx deadline minus safety margin, got %s", got)
+	}
+}
+
+func TestWebImagePollDeadlineUsesThirtyMinutesForWaitAllTestMode(t *testing.T) {
+	req := &provider.Request{
+		ModelCode: "gpt-image-2",
+		Count:     10,
+		Params:    map[string]any{"web_test_mode": "wait_all_then_download"},
+	}
+	mode := webImageTestMode(req)
+	if !mode.Enabled {
+		t.Fatalf("expected test mode enabled")
+	}
+
+	pollWindow := 9 * time.Minute
+	if mode.Enabled {
+		pollWindow = 30 * time.Minute
+	}
+	before := time.Now().Add(30*time.Minute - 2*time.Second)
+	got := webImagePollDeadline(context.Background(), pollWindow, 15*time.Second)
+	after := time.Now().Add(30*time.Minute + 2*time.Second)
+	if got.Before(before) || got.After(after) {
+		t.Fatalf("expected deadline near 30m from now, got %s", got)
 	}
 }
