@@ -709,6 +709,56 @@ func TestBuildFinalOrderedWebCandidatesUsesAuthoritativeOrder(t *testing.T) {
 	}
 }
 
+func TestWebCurrentOrderStableRoundsRequiresTwoMatchingSnapshots(t *testing.T) {
+	pool := newWebImageCandidatePool()
+	a := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_a"})
+	b := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_b"})
+	a.directOrderIndex = 0
+	b.directOrderIndex = 1
+
+	snapshot, rounds := webCurrentOrderStableRounds(pool, 2, "", 0)
+	if snapshot == "" || rounds != 1 {
+		t.Fatalf("expected first current-order snapshot, got snapshot=%q rounds=%d", snapshot, rounds)
+	}
+	snapshot, rounds = webCurrentOrderStableRounds(pool, 2, snapshot, rounds)
+	if rounds != 2 {
+		t.Fatalf("expected second identical current-order snapshot to be stable, got %d", rounds)
+	}
+}
+
+func TestResolveWebImageTestModeFinalCandidatesFallsBackToCurrentStable(t *testing.T) {
+	pool := newWebImageCandidatePool()
+	a := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_a"})
+	b := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_b"})
+	a.directOrderIndex = 0
+	b.directOrderIndex = 1
+
+	snapshot := webCandidateOrderSnapshotKey(pool, 2)
+	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 2, false, 0, snapshot, 2, "")
+	if strategy != "current_stable" {
+		t.Fatalf("expected current_stable strategy, got %q", strategy)
+	}
+	if len(got) != 2 || got[0].fileID != "file_a" || got[1].fileID != "file_b" {
+		t.Fatalf("unexpected fallback order: %#v", got)
+	}
+}
+
+func TestResolveWebImageTestModeFinalCandidatesFallsBackToFirstComplete(t *testing.T) {
+	pool := newWebImageCandidatePool()
+	a := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_a"})
+	b := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_b"})
+	a.directOrderIndex = 1
+	b.directOrderIndex = 0
+
+	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 2, false, 0, "", 0, "file:file_b|file:file_a")
+	if strategy != "first_complete" {
+		t.Fatalf("expected first_complete strategy, got %q", strategy)
+	}
+	if len(got) != 2 || got[0].fileID != "file_b" || got[1].fileID != "file_a" {
+		t.Fatalf("unexpected first-complete order: %#v", got)
+	}
+}
+
 func TestFirstWebImageDownloadURLPrefersFileIDThenRawURL(t *testing.T) {
 	candidate := &webImageCandidate{
 		fileID:  "file_123",

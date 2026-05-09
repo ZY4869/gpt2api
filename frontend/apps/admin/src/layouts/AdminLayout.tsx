@@ -27,7 +27,7 @@ import { authApi } from '../lib/services';
 import { useAuthStore } from '../stores/auth';
 import { toast } from '../stores/toast';
 
-const APP_VERSION = 'v0.5.29';
+const APP_VERSION = 'v0.5.30';
 
 const NAV = [
   { to: '/dashboard', label: '仪表盘', icon: LayoutDashboard },
