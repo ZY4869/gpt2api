@@ -4,6 +4,16 @@
 
 ---
 
+## v0.5.28 — 2026-05-09
+
+### 生产健康检查修复
+
+- 修复生产 `klein-api` 容器在服务正常启动时仍被 Docker 标记为 `unhealthy` 的问题
+- 根因是后端生产镜像使用 `distroless`，原有 `healthcheck` 依赖 `sh / wget / grep`，在镜像内不可用
+- 新增原生 Go `healthcheck` 二进制并打包进 backend 镜像，生产 compose 改为直接调用它检查 `/healthz`
+
+---
+
 ## v0.5.27 — 2026-05-09
 
 ### GPT 图片任务终态修复

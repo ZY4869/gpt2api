@@ -21,6 +21,8 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w \
         -X github.com/kleinai/backend/pkg/version.Build=${VERSION} \
         -X github.com/kleinai/backend/pkg/version.Time=${BUILD_TIME}" \
     -o /out/api    ./cmd/api  && \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" \
+    -o /out/healthcheck ./cmd/healthcheck && \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w \
         -X github.com/kleinai/backend/pkg/version.Build=${VERSION}" \
     -o /out/admin  ./cmd/admin && \
@@ -39,6 +41,7 @@ WORKDIR /app
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /usr/share/zoneinfo                 /usr/share/zoneinfo
 COPY --from=builder /out/api                            /app/api
+COPY --from=builder /out/healthcheck                    /app/healthcheck
 COPY --from=builder /out/admin                          /app/admin
 COPY --from=builder /out/openai                         /app/openai
 COPY --from=builder /out/worker                         /app/worker

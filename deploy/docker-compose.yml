@@ -99,8 +99,9 @@ services:
       redis:  { condition: service_healthy }
       flaresolverr: { condition: service_started }
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:17180/healthz | grep -q ok || exit 1"]
+      test: ["/app/healthcheck", "http://127.0.0.1:17180/healthz"]
       interval: 15s
+      timeout: 5s
       retries: 5
     deploy:
       resources:
