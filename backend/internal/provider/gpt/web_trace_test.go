@@ -759,6 +759,27 @@ func TestResolveWebImageTestModeFinalCandidatesFallsBackToFirstComplete(t *testi
 	}
 }
 
+func TestWebImageTestModeReadyToFinalizeRequiresCompleteSet(t *testing.T) {
+	if webImageTestModeReadyToFinalize(9, 10, true, 2, 2, "file:file_1", 12) {
+		t.Fatalf("expected incomplete set to remain pending")
+	}
+}
+
+func TestWebImageTestModeReadyToFinalizeAcceptsCurrentStableOrder(t *testing.T) {
+	if !webImageTestModeReadyToFinalize(10, 10, false, 0, 2, "file:file_1", 8) {
+		t.Fatalf("expected stable current order to finalize")
+	}
+}
+
+func TestWebImageTestModeReadyToFinalizeAllowsFirstCompleteFallbackAfterExtraPolling(t *testing.T) {
+	if webImageTestModeReadyToFinalize(10, 10, false, 0, 1, "file:file_1|file:file_2", 11) {
+		t.Fatalf("expected first-complete fallback to wait a bit longer")
+	}
+	if !webImageTestModeReadyToFinalize(10, 10, false, 0, 1, "file:file_1|file:file_2", 12) {
+		t.Fatalf("expected first-complete fallback after extra polling")
+	}
+}
+
 func TestFirstWebImageDownloadURLPrefersFileIDThenRawURL(t *testing.T) {
 	candidate := &webImageCandidate{
 		fileID:  "file_123",

@@ -550,7 +550,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			updateWebImageCandidateOrder(candidate, state, idx, pollCount)
 		}
 		if testMode.Enabled {
-			if (testMode.CollectionCandidateCount >= count && testMode.AuthoritativeComplete && stableRounds >= 2) || conversationID == "" || time.Now().After(deadline) {
+			if webImageTestModeReadyToFinalize(testMode.CollectionCandidateCount, count, testMode.AuthoritativeComplete, stableRounds, currentOrderStableRounds, firstCompleteOrderSnapshot, pollCount) || conversationID == "" || time.Now().After(deadline) {
 				break
 			}
 		} else if countWebImageCandidatesWithData(candidatePool) >= count || conversationID == "" || time.Now().After(deadline) {
@@ -3056,6 +3056,22 @@ func resolveWebImageTestModeFinalCandidates(pool *webImageCandidatePool, count i
 	default:
 		return buildFinalOrderedWebCandidates(pool, count), "current_sorted"
 	}
+}
+
+func webImageTestModeReadyToFinalize(collectionCandidateCount int, count int, authoritativeComplete bool, authoritativeStableRounds int, currentOrderStableRounds int, firstCompleteOrderSnapshot string, pollCount int) bool {
+	if collectionCandidateCount < count {
+		return false
+	}
+	if authoritativeComplete && authoritativeStableRounds >= 2 {
+		return true
+	}
+	if currentOrderStableRounds >= 2 {
+		return true
+	}
+	if strings.TrimSpace(firstCompleteOrderSnapshot) == "" {
+		return false
+	}
+	return pollCount >= 12
 }
 
 func buildFinalOrderedWebCandidates(pool *webImageCandidatePool, limit int) []*webImageCandidate {
