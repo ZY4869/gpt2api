@@ -382,10 +382,10 @@ func generationTimeoutForTask(t *model.GenerationTask, params map[string]any) ti
 		return 15 * time.Minute
 	}
 	if t.Provider == model.ProviderGPT && t.Kind == string(provider.KindImage) && strings.EqualFold(t.ModelCode, "gpt-image-2") {
-		if t.Count > 4 {
-			return 30 * time.Minute
-		}
 		if strings.EqualFold(strParamAny(params, "web_test_mode", ""), "wait_all_then_download") {
+			return 10 * time.Minute
+		}
+		if t.Count > 4 {
 			return 30 * time.Minute
 		}
 		if shouldUseGPTWebRoute(params) {

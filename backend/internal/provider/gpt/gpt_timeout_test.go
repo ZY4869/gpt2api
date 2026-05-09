@@ -28,7 +28,7 @@ func TestWebImagePollDeadlineHonorsContextDeadlineSafetyMargin(t *testing.T) {
 	}
 }
 
-func TestWebImagePollDeadlineUsesThirtyMinutesForWaitAllTestMode(t *testing.T) {
+func TestWebImagePollDeadlineUsesTenMinutesForWaitAllTestMode(t *testing.T) {
 	req := &provider.Request{
 		ModelCode: "gpt-image-2",
 		Count:     10,
@@ -41,13 +41,13 @@ func TestWebImagePollDeadlineUsesThirtyMinutesForWaitAllTestMode(t *testing.T) {
 
 	pollWindow := 9 * time.Minute
 	if mode.Enabled {
-		pollWindow = 30 * time.Minute
+		pollWindow = webImageWaitAllPollWindow
 	}
-	before := time.Now().Add(30*time.Minute - 2*time.Second)
+	before := time.Now().Add(10*time.Minute - 2*time.Second)
 	got := webImagePollDeadline(context.Background(), pollWindow, 15*time.Second)
-	after := time.Now().Add(30*time.Minute + 2*time.Second)
+	after := time.Now().Add(10*time.Minute + 2*time.Second)
 	if got.Before(before) || got.After(after) {
-		t.Fatalf("expected deadline near 30m from now, got %s", got)
+		t.Fatalf("expected deadline near 10m from now, got %s", got)
 	}
 }
 

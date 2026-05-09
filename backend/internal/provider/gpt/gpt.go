@@ -47,6 +47,7 @@ const (
 	defaultWebImageThinkingModel = "gpt-5-5-thinking"
 	webImageWaitAllThenDownload  = "wait_all_then_download"
 	webImagePollStepTimeout      = 25 * time.Second
+	webImageWaitAllPollWindow    = 10 * time.Minute
 )
 
 // Provider 实现 provider.Provider。
@@ -304,6 +305,7 @@ type webImageTestModeState struct {
 	AuthoritativeComplete     bool
 	AuthoritativeStableRounds int
 	CurrentOrderStableRounds  int
+	AvailableOrderStableRounds int
 	FirstCompleteOrderReady   bool
 	FinalDownloadStarted      bool
 	FinalDownloadSeqCount     int
@@ -447,7 +449,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 	}
 	pollWindow := 9 * time.Minute
 	if testMode.Enabled {
-		pollWindow = 30 * time.Minute
+		pollWindow = webImageWaitAllPollWindow
 	}
 	deadline := webImagePollDeadline(ctx, pollWindow, 15*time.Second)
 	pollCount := 0
@@ -455,6 +457,8 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 	stableRounds := 0
 	currentOrderSnapshot := ""
 	currentOrderStableRounds := 0
+	availableOrderSnapshot := ""
+	availableOrderStableRounds := 0
 	firstCompleteOrderSnapshot := ""
 	for {
 		if conversationID != "" {
@@ -488,6 +492,10 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		testMode.AuthoritativeComplete = webAuthoritativeOrderComplete(state, count)
 		snapshot, stableRounds = webAuthoritativeStableRounds(state, count, snapshot, stableRounds)
 		testMode.AuthoritativeStableRounds = stableRounds
+		if testMode.Enabled {
+			availableOrderSnapshot, availableOrderStableRounds = webCurrentOrderStableRounds(candidatePool, 0, availableOrderSnapshot, availableOrderStableRounds)
+			testMode.AvailableOrderStableRounds = availableOrderStableRounds
+		}
 		if testMode.Enabled && testMode.CollectionCandidateCount >= count {
 			currentOrderSnapshot, currentOrderStableRounds = webCurrentOrderStableRounds(candidatePool, count, currentOrderSnapshot, currentOrderStableRounds)
 			if firstCompleteOrderSnapshot == "" && currentOrderSnapshot != "" {
@@ -550,7 +558,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			updateWebImageCandidateOrder(candidate, state, idx, pollCount)
 		}
 		if testMode.Enabled {
-			if webImageTestModeReadyToFinalize(testMode.CollectionCandidateCount, count, testMode.AuthoritativeComplete, stableRounds, currentOrderStableRounds, firstCompleteOrderSnapshot, pollCount) || conversationID == "" || time.Now().After(deadline) {
+			if webImageTestModeReadyToFinalize(testMode.CollectionCandidateCount, count, testMode.AuthoritativeComplete, stableRounds, currentOrderStableRounds, availableOrderStableRounds, firstCompleteOrderSnapshot, pollCount) || conversationID == "" || time.Now().After(deadline) {
 				break
 			}
 		} else if countWebImageCandidatesWithData(candidatePool) >= count || conversationID == "" || time.Now().After(deadline) {
@@ -626,7 +634,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		return nil, fmt.Errorf("gpt image2 web produced text instead of image: %s", snippet([]byte(lastText), 220))
 	}
 	if testMode.Enabled {
-		if testMode.CollectionCandidateCount < count {
+		if testMode.CollectionCandidateCount < count && testMode.StrictFailOnIncomplete {
 			errText := fmt.Sprintf("gpt image2 web test mode did not reach complete final set (%d/%d authoritative=%v stable_rounds=%d)", testMode.CollectionCandidateCount, count, testMode.AuthoritativeComplete, stableRounds)
 			logUpstream(ctx, req, provider.UpstreamLogEntry{
 				Provider:        "gpt",
@@ -637,9 +645,9 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			})
 			return nil, fmt.Errorf("%s", errText)
 		}
-		finalCandidates, finalStrategy := resolveWebImageTestModeFinalCandidates(candidatePool, count, testMode.AuthoritativeComplete, stableRounds, currentOrderSnapshot, currentOrderStableRounds, firstCompleteOrderSnapshot)
+		finalCandidates, finalStrategy := resolveWebImageTestModeFinalCandidates(candidatePool, count, testMode.AuthoritativeComplete, stableRounds, currentOrderSnapshot, currentOrderStableRounds, availableOrderSnapshot, availableOrderStableRounds, firstCompleteOrderSnapshot)
 		testMode.FinalOrderStrategy = finalStrategy
-		if len(finalCandidates) < count {
+		if len(finalCandidates) == 0 {
 			errText := fmt.Sprintf("gpt image2 web test mode could not build final download order (%d/%d authoritative=%v stable_rounds=%d strategy=%s)", len(finalCandidates), count, testMode.AuthoritativeComplete, stableRounds, finalStrategy)
 			logUpstream(ctx, req, provider.UpstreamLogEntry{
 				Provider:        "gpt",
@@ -649,6 +657,29 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 				Meta:            mergeMeta(map[string]any{"conversation_id": conversationID}, webImageTestModeMeta(testMode)),
 			})
 			return nil, fmt.Errorf("%s", errText)
+		}
+		if len(finalCandidates) < count {
+			logUpstream(ctx, req, provider.UpstreamLogEntry{
+				Provider: "gpt",
+				Stage:    "web.partial",
+				Meta: mergeMeta(map[string]any{
+					"conversation_id":      conversationID,
+					"final_order_strategy": finalStrategy,
+					"final_candidate_count": len(finalCandidates),
+					"requested_count":      count,
+				}, webImageTestModeMeta(testMode)),
+			})
+			if testMode.StrictFailOnIncomplete {
+				errText := fmt.Sprintf("gpt image2 web test mode did not reach complete final set (%d/%d authoritative=%v stable_rounds=%d)", len(finalCandidates), count, testMode.AuthoritativeComplete, stableRounds)
+				logUpstream(ctx, req, provider.UpstreamLogEntry{
+					Provider:        "gpt",
+					Stage:           "web.failed",
+					ResponseExcerpt: lastDiag,
+					Error:           errText,
+					Meta:            mergeMeta(map[string]any{"conversation_id": conversationID}, webImageTestModeMeta(testMode)),
+				})
+				return nil, fmt.Errorf("%s", errText)
+			}
 		}
 		if finalStrategy != "" && finalStrategy != "authoritative_stable" {
 			logUpstream(ctx, req, provider.UpstreamLogEntry{
@@ -700,8 +731,8 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 				Meta:     mergeMeta(map[string]any{"mime": mime, "final_download_seq": seq}, webImageTestModeMeta(testMode)),
 			})
 		}
-		if countWebImageCandidatesWithData(candidatePool) < count {
-			errText := fmt.Sprintf("gpt image2 web test mode final download returned %d/%d images", countWebImageCandidatesWithData(candidatePool), count)
+		if countWebImageCandidatesWithData(candidatePool) < len(finalCandidates) {
+			errText := fmt.Sprintf("gpt image2 web test mode final download returned %d/%d images", countWebImageCandidatesWithData(candidatePool), len(finalCandidates))
 			logUpstream(ctx, req, provider.UpstreamLogEntry{
 				Provider:        "gpt",
 				Stage:           "web.failed",
@@ -721,7 +752,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.failed", ResponseExcerpt: "gpt image2 web returned 0 image"})
 		return nil, fmt.Errorf("gpt image2 web returned 0 image")
 	}
-	if requireCompleteSet && len(assets) < count {
+	if requireCompleteSet && len(assets) < count && (!testMode.Enabled || testMode.StrictFailOnIncomplete) {
 		errText := fmt.Sprintf("gpt image2 web single conversation returned %d/%d images", len(assets), count)
 		if lastDiag != "" {
 			errText += " (" + lastDiag + ")"
@@ -2001,7 +2032,7 @@ func webImageTestMode(req *provider.Request) webImageTestModeState {
 		Enabled:                true,
 		Mode:                   mode,
 		DownloadDeferred:       true,
-		StrictFailOnIncomplete: true,
+		StrictFailOnIncomplete: false,
 	}
 }
 
@@ -2016,6 +2047,7 @@ func webImageTestModeMeta(mode webImageTestModeState) map[string]any {
 		"authoritative_complete":      mode.AuthoritativeComplete,
 		"authoritative_stable_rounds": mode.AuthoritativeStableRounds,
 		"current_order_stable_rounds": mode.CurrentOrderStableRounds,
+		"available_order_stable_rounds": mode.AvailableOrderStableRounds,
 		"first_complete_order_ready":  mode.FirstCompleteOrderReady,
 		"final_download_started":      mode.FinalDownloadStarted,
 		"final_download_seq_count":    mode.FinalDownloadSeqCount,
@@ -3087,7 +3119,7 @@ func webUpdateCandidatePoolFromResolvedURLs(pool *webImageCandidatePool, state w
 	}
 }
 
-func resolveWebImageTestModeFinalCandidates(pool *webImageCandidatePool, count int, authoritativeComplete bool, authoritativeStableRounds int, currentOrderSnapshot string, currentOrderStableRounds int, firstCompleteOrderSnapshot string) ([]*webImageCandidate, string) {
+func resolveWebImageTestModeFinalCandidates(pool *webImageCandidatePool, count int, authoritativeComplete bool, authoritativeStableRounds int, currentOrderSnapshot string, currentOrderStableRounds int, availableOrderSnapshot string, availableOrderStableRounds int, firstCompleteOrderSnapshot string) ([]*webImageCandidate, string) {
 	switch {
 	case authoritativeComplete && authoritativeStableRounds >= 2:
 		return buildFinalOrderedWebCandidates(pool, count), "authoritative_stable"
@@ -3095,25 +3127,30 @@ func resolveWebImageTestModeFinalCandidates(pool *webImageCandidatePool, count i
 		return buildWebCandidatesFromSnapshot(pool, currentOrderSnapshot, count), "current_stable"
 	case firstCompleteOrderSnapshot != "":
 		return buildWebCandidatesFromSnapshot(pool, firstCompleteOrderSnapshot, count), "first_complete"
+	case availableOrderStableRounds >= 3 && availableOrderSnapshot != "":
+		return buildWebCandidatesFromSnapshot(pool, availableOrderSnapshot, count), "partial_stable"
 	default:
 		return buildFinalOrderedWebCandidates(pool, count), "current_sorted"
 	}
 }
 
-func webImageTestModeReadyToFinalize(collectionCandidateCount int, count int, authoritativeComplete bool, authoritativeStableRounds int, currentOrderStableRounds int, firstCompleteOrderSnapshot string, pollCount int) bool {
-	if collectionCandidateCount < count {
+func webImageTestModeReadyToFinalize(collectionCandidateCount int, count int, authoritativeComplete bool, authoritativeStableRounds int, currentOrderStableRounds int, availableOrderStableRounds int, firstCompleteOrderSnapshot string, pollCount int) bool {
+	if collectionCandidateCount <= 0 {
 		return false
 	}
-	if authoritativeComplete && authoritativeStableRounds >= 2 {
-		return true
+	if collectionCandidateCount >= count {
+		if authoritativeComplete && authoritativeStableRounds >= 2 {
+			return true
+		}
+		if currentOrderStableRounds >= 2 {
+			return true
+		}
+		if strings.TrimSpace(firstCompleteOrderSnapshot) == "" {
+			return false
+		}
+		return pollCount >= 12
 	}
-	if currentOrderStableRounds >= 2 {
-		return true
-	}
-	if strings.TrimSpace(firstCompleteOrderSnapshot) == "" {
-		return false
-	}
-	return pollCount >= 12
+	return availableOrderStableRounds >= 3 && pollCount >= 6
 }
 
 func buildFinalOrderedWebCandidates(pool *webImageCandidatePool, limit int) []*webImageCandidate {

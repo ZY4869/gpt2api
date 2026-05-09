@@ -41,7 +41,7 @@ func TestGenerationTimeoutForTask(t *testing.T) {
 			name:   "gpt image2 web wait-all test mode",
 			task:   &model.GenerationTask{Kind: string(provider.KindImage), Provider: model.ProviderGPT, ModelCode: "gpt-image-2", Count: 4},
 			params: map[string]any{"resolution": "1K", "web_test_mode": "wait_all_then_download"},
-			want:   30 * time.Minute,
+			want:   10 * time.Minute,
 		},
 	}
 	for _, tt := range tests {
@@ -58,7 +58,7 @@ func TestIsTaskStaleAt(t *testing.T) {
 	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
 
 	t.Run("wait all mode stale after timeout plus grace", func(t *testing.T) {
-		started := now.Add(-(30*time.Minute + staleTaskGrace + time.Second))
+		started := now.Add(-(10*time.Minute + staleTaskGrace + time.Second))
 		task := &model.GenerationTask{
 			Kind:      string(provider.KindImage),
 			Provider:  model.ProviderGPT,
@@ -74,7 +74,7 @@ func TestIsTaskStaleAt(t *testing.T) {
 	})
 
 	t.Run("wait all mode not stale before grace", func(t *testing.T) {
-		started := now.Add(-(30*time.Minute + staleTaskGrace - time.Second))
+		started := now.Add(-(10*time.Minute + staleTaskGrace - time.Second))
 		task := &model.GenerationTask{
 			Kind:      string(provider.KindImage),
 			Provider:  model.ProviderGPT,

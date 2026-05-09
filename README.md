@@ -10,7 +10,7 @@
 [![Forks](https://img.shields.io/github/forks/432539/gpt2api?style=flat-square&logo=github&color=blue)](https://github.com/432539/gpt2api/network/members)
 [![Issues](https://img.shields.io/github/issues/432539/gpt2api?style=flat-square&logo=github)](https://github.com/432539/gpt2api/issues)
 [![Last Commit](https://img.shields.io/github/last-commit/432539/gpt2api?style=flat-square&logo=git&color=success)](https://github.com/432539/gpt2api/commits/main)
-[![Release](https://img.shields.io/badge/release-v0.5.32-brightgreen?style=flat-square)](https://github.com/432539/gpt2api/releases)
+[![Release](https://img.shields.io/badge/release-v0.5.33-brightgreen?style=flat-square)](https://github.com/432539/gpt2api/releases)
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?style=flat-square&logo=go)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react)](https://react.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
@@ -33,7 +33,7 @@
 
 适用场景：私有化 AIGC 服务、白标 SaaS、多账号合规分发、内部团队调用聚合。
 
-> 当前默认版本：`v0.5.32`，作为当前 fork 的发布线；上游 `v2.x` 仍保留为新架构参考基线。
+> 当前默认版本：`v0.5.33`，作为当前 fork 的发布线；上游 `v2.x` 仍保留为新架构参考基线。
 
 ## ✨ 功能特性
 
@@ -275,6 +275,13 @@ pnpm --filter @kleinai/admin dev    # http://localhost:5174
 ## 📝 更新日志
 
 详见 [PROGRESS.md](./PROGRESS.md)。
+
+### v0.5.33（2026-05-09）
+
+- 优化 `wait_all_then_download` 测试模式，将最长等待时间从 `30 分钟` 缩短到 `10 分钟`
+- 当上游超时或提前停产时，允许直接返回当前已收集到的图片，不再因 `8/10` 这类不满套场景整单失败
+- 新增“部分结果稳定”智能收口逻辑：若上游已停止补图但候选集合顺序连续稳定若干轮，则自动提前结束并回收现有结果
+- 同步调整任务级超时与 stale 判定，并补充 provider / service 层测试覆盖
 
 ### v0.5.32（2026-05-09）
 

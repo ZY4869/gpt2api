@@ -656,7 +656,7 @@ func TestWebImageTestModeRequiresGPTWebMultiImage(t *testing.T) {
 	if !mode.Enabled {
 		t.Fatalf("expected test mode to be enabled")
 	}
-	if !mode.DownloadDeferred || !mode.StrictFailOnIncomplete {
+	if !mode.DownloadDeferred || mode.StrictFailOnIncomplete {
 		t.Fatalf("unexpected test mode state %#v", mode)
 	}
 }
@@ -749,7 +749,7 @@ func TestResolveWebImageTestModeFinalCandidatesFallsBackToCurrentStable(t *testi
 	b.directOrderIndex = 1
 
 	snapshot := webCandidateOrderSnapshotKey(pool, 2)
-	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 2, false, 0, snapshot, 2, "")
+	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 2, false, 0, snapshot, 2, "", 0, "")
 	if strategy != "current_stable" {
 		t.Fatalf("expected current_stable strategy, got %q", strategy)
 	}
@@ -765,7 +765,7 @@ func TestResolveWebImageTestModeFinalCandidatesFallsBackToFirstComplete(t *testi
 	a.directOrderIndex = 1
 	b.directOrderIndex = 0
 
-	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 2, false, 0, "", 0, "file:file_b|file:file_a")
+	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 2, false, 0, "", 0, "", 0, "file:file_b|file:file_a")
 	if strategy != "first_complete" {
 		t.Fatalf("expected first_complete strategy, got %q", strategy)
 	}
@@ -775,23 +775,48 @@ func TestResolveWebImageTestModeFinalCandidatesFallsBackToFirstComplete(t *testi
 }
 
 func TestWebImageTestModeReadyToFinalizeRequiresCompleteSet(t *testing.T) {
-	if webImageTestModeReadyToFinalize(9, 10, true, 2, 2, "file:file_1", 12) {
+	if webImageTestModeReadyToFinalize(0, 10, true, 2, 2, 0, "file:file_1", 12) {
 		t.Fatalf("expected incomplete set to remain pending")
 	}
 }
 
 func TestWebImageTestModeReadyToFinalizeAcceptsCurrentStableOrder(t *testing.T) {
-	if !webImageTestModeReadyToFinalize(10, 10, false, 0, 2, "file:file_1", 8) {
+	if !webImageTestModeReadyToFinalize(10, 10, false, 0, 2, 0, "file:file_1", 8) {
 		t.Fatalf("expected stable current order to finalize")
 	}
 }
 
 func TestWebImageTestModeReadyToFinalizeAllowsFirstCompleteFallbackAfterExtraPolling(t *testing.T) {
-	if webImageTestModeReadyToFinalize(10, 10, false, 0, 1, "file:file_1|file:file_2", 11) {
+	if webImageTestModeReadyToFinalize(10, 10, false, 0, 1, 0, "file:file_1|file:file_2", 11) {
 		t.Fatalf("expected first-complete fallback to wait a bit longer")
 	}
-	if !webImageTestModeReadyToFinalize(10, 10, false, 0, 1, "file:file_1|file:file_2", 12) {
+	if !webImageTestModeReadyToFinalize(10, 10, false, 0, 1, 0, "file:file_1|file:file_2", 12) {
 		t.Fatalf("expected first-complete fallback after extra polling")
+	}
+}
+
+func TestResolveWebImageTestModeFinalCandidatesFallsBackToPartialStable(t *testing.T) {
+	pool := newWebImageCandidatePool()
+	a := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_a"})
+	b := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_b"})
+	a.directOrderIndex = 0
+	b.directOrderIndex = 1
+
+	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 10, false, 0, "", 0, "file:file_a|file:file_b", 3, "")
+	if strategy != "partial_stable" {
+		t.Fatalf("expected partial_stable strategy, got %q", strategy)
+	}
+	if len(got) != 2 || got[0].fileID != "file_a" || got[1].fileID != "file_b" {
+		t.Fatalf("unexpected partial-stable order: %#v", got)
+	}
+}
+
+func TestWebImageTestModeReadyToFinalizeAllowsStablePartialSet(t *testing.T) {
+	if webImageTestModeReadyToFinalize(8, 10, false, 0, 0, 2, "", 5) {
+		t.Fatalf("expected partial set to wait for more confirmation")
+	}
+	if !webImageTestModeReadyToFinalize(8, 10, false, 0, 0, 3, "", 6) {
+		t.Fatalf("expected stable partial set to finalize")
 	}
 }
 
