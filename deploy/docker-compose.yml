@@ -99,7 +99,7 @@ services:
       redis:  { condition: service_healthy }
       flaresolverr: { condition: service_started }
     healthcheck:
-      test: ["/app/healthcheck", "http://127.0.0.1:17180/healthz"]
+      test: ["CMD", "/app/healthcheck", "http://127.0.0.1:17180/healthz"]
       interval: 15s
       timeout: 5s
       retries: 5

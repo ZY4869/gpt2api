@@ -4,6 +4,16 @@
 
 ---
 
+## v0.5.29 — 2026-05-09
+
+### Compose 健康检查语法修正
+
+- 修复生产 `docker-compose.yml` 中 `healthcheck.test` 的数组语法不兼容问题
+- 将 API 健康检查改为标准 `["CMD", "/app/healthcheck", "..."]` 形式，兼容当前 Docker Compose 解析要求
+- 保持 `v0.5.28` 的 distroless 原生 healthcheck 方案不变，仅修正 compose 编排语法
+
+---
+
 ## v0.5.28 — 2026-05-09
 
 ### 生产健康检查修复
