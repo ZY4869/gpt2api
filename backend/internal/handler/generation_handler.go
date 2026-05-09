@@ -234,6 +234,9 @@ func (h *GenerationHandler) CreateText(c *gin.Context) {
 func (h *GenerationHandler) Get(c *gin.Context) {
 	id := c.Param("task_id")
 	uid := middleware.MustUID(c)
+	if h.svc != nil {
+		h.svc.ReapTaskIfStale(c.Request.Context(), id, uid)
+	}
 	t, err := h.repo.GetByTaskID(c.Request.Context(), id)
 	if err != nil || t.UserID != uid {
 		response.Fail(c, errcode.ResourceMissing)

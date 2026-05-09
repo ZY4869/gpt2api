@@ -321,6 +321,12 @@ func (h *OpenAIHandler) GetVideoTask(c *gin.Context) {
 
 func (h *OpenAIHandler) getTask(c *gin.Context, kind provider.Kind) {
 	taskID := strings.TrimSpace(c.Param("task_id"))
+	if h.svc != nil {
+		k := middleware.APIKeyFromCtx(c)
+		if k != nil {
+			h.svc.ReapTaskIfStale(c.Request.Context(), taskID, k.UserID)
+		}
+	}
 	t, results, ok := h.authorizeTaskResult(c, taskID, kind)
 	if !ok {
 		return
@@ -370,6 +376,12 @@ func (h *OpenAIHandler) respondTaskResult(c *gin.Context, t *model.GenerationTas
 func (h *OpenAIHandler) waitTask(c *gin.Context, taskID string, timeout time.Duration) (*model.GenerationTask, []*model.GenerationResult) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		if h.svc != nil {
+			k := middleware.APIKeyFromCtx(c)
+			if k != nil {
+				h.svc.ReapTaskIfStale(c.Request.Context(), taskID, k.UserID)
+			}
+		}
 		t, err := h.repo.GetByTaskID(c.Request.Context(), taskID)
 		if err == nil && (t.Status == model.GenStatusSucceeded || t.Status == model.GenStatusFailed || t.Status == model.GenStatusRefunded) {
 			items, _ := h.repo.ListResultsByTask(c.Request.Context(), taskID)

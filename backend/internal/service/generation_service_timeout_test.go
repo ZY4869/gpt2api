@@ -53,3 +53,55 @@ func TestGenerationTimeoutForTask(t *testing.T) {
 		})
 	}
 }
+
+func TestIsTaskStaleAt(t *testing.T) {
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+
+	t.Run("wait all mode stale after timeout plus grace", func(t *testing.T) {
+		started := now.Add(-(30*time.Minute + staleTaskGrace + time.Second))
+		task := &model.GenerationTask{
+			Kind:      string(provider.KindImage),
+			Provider:  model.ProviderGPT,
+			ModelCode: "gpt-image-2",
+			Count:     10,
+			Status:    model.GenStatusRunning,
+			StartedAt: &started,
+			Params:    `{"resolution":"1K","web_test_mode":"wait_all_then_download"}`,
+		}
+		if !isTaskStaleAt(task, now) {
+			t.Fatalf("expected task to be stale")
+		}
+	})
+
+	t.Run("wait all mode not stale before grace", func(t *testing.T) {
+		started := now.Add(-(30*time.Minute + staleTaskGrace - time.Second))
+		task := &model.GenerationTask{
+			Kind:      string(provider.KindImage),
+			Provider:  model.ProviderGPT,
+			ModelCode: "gpt-image-2",
+			Count:     10,
+			Status:    model.GenStatusRunning,
+			StartedAt: &started,
+			Params:    `{"resolution":"1K","web_test_mode":"wait_all_then_download"}`,
+		}
+		if isTaskStaleAt(task, now) {
+			t.Fatalf("expected task not to be stale")
+		}
+	})
+
+	t.Run("terminal tasks are never stale", func(t *testing.T) {
+		started := now.Add(-24 * time.Hour)
+		task := &model.GenerationTask{
+			Kind:      string(provider.KindImage),
+			Provider:  model.ProviderGPT,
+			ModelCode: "gpt-image-2",
+			Count:     10,
+			Status:    model.GenStatusFailed,
+			StartedAt: &started,
+			Params:    `{"resolution":"1K","web_test_mode":"wait_all_then_download"}`,
+		}
+		if isTaskStaleAt(task, now) {
+			t.Fatalf("terminal task should not be stale")
+		}
+	})
+}

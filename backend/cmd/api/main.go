@@ -5,12 +5,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/kleinai/backend/internal/bootstrap"
 	"github.com/kleinai/backend/internal/router"
+	"github.com/kleinai/backend/internal/service"
 	"github.com/kleinai/backend/pkg/logger"
 )
 
@@ -22,6 +25,10 @@ func main() {
 		panic(err)
 	}
 	defer logger.Sync()
+
+	if deps.DB != nil {
+		service.NewGenerationTaskReaperForDB(deps.DB, deps.AES, time.Minute).Start(context.Background())
+	}
 
 	r := router.New(router.Options{ServiceName: serviceName, Deps: deps})
 	router.MountAPI(r, deps)

@@ -8,6 +8,7 @@ import (
 	"context"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/hibiken/asynq"
 	"go.uber.org/zap"
@@ -42,6 +43,8 @@ func main() {
 	}
 
 	if deps.DB != nil {
+		service.NewGenerationTaskReaperForDB(deps.DB, deps.AES, time.Minute).Start(context.Background())
+
 		sysCfgSvc := service.NewSystemConfigService(repo.NewSystemConfigRepo(deps.DB))
 		proxySvc := service.NewProxyService(repo.NewProxyRepo(deps.DB), deps.AES)
 		service.NewGrokCFRefreshService(sysCfgSvc, proxySvc).Start(context.Background())

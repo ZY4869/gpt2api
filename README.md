@@ -10,7 +10,7 @@
 [![Forks](https://img.shields.io/github/forks/432539/gpt2api?style=flat-square&logo=github&color=blue)](https://github.com/432539/gpt2api/network/members)
 [![Issues](https://img.shields.io/github/issues/432539/gpt2api?style=flat-square&logo=github)](https://github.com/432539/gpt2api/issues)
 [![Last Commit](https://img.shields.io/github/last-commit/432539/gpt2api?style=flat-square&logo=git&color=success)](https://github.com/432539/gpt2api/commits/main)
-[![Release](https://img.shields.io/badge/release-v0.5.26-brightgreen?style=flat-square)](https://github.com/432539/gpt2api/releases)
+[![Release](https://img.shields.io/badge/release-v0.5.27-brightgreen?style=flat-square)](https://github.com/432539/gpt2api/releases)
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?style=flat-square&logo=go)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react)](https://react.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
@@ -33,7 +33,7 @@
 
 适用场景：私有化 AIGC 服务、白标 SaaS、多账号合规分发、内部团队调用聚合。
 
-> 当前默认版本：`v0.5.26`，作为当前 fork 的发布线；上游 `v2.x` 仍保留为新架构参考基线。
+> 当前默认版本：`v0.5.27`，作为当前 fork 的发布线；上游 `v2.x` 仍保留为新架构参考基线。
 
 ## ✨ 功能特性
 
@@ -275,6 +275,12 @@ pnpm --filter @kleinai/admin dev    # http://localhost:5174
 ## 📝 更新日志
 
 详见 [PROGRESS.md](./PROGRESS.md)。
+
+### v0.5.27（2026-05-09）
+
+- 修复 `gpt-image-2` Web 测试模式任务在上游失败、后台 panic 或异常退出后仍可能长期停留在 `running` 的问题
+- 后台执行链路新增 panic recover，并统一走任务失败收口与退款逻辑，避免 OpenAI 查询、用户历史、管理后台看到不一致终态
+- 新增全局 stale task reaper：服务启动即 sweep 一次，之后每分钟自动回收超时未终态任务；任务查询前也会做一次即时自愈校正
 
 ### v0.5.26（2026-05-08）
 

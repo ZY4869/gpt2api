@@ -17,6 +17,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime/debug"
 	"regexp"
 	"strconv"
 	"strings"
@@ -36,6 +37,8 @@ import (
 )
 
 const codexOAuthClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+
+const staleTaskGrace = 2 * time.Minute
 
 // GenerationService 生成调度服务。
 type GenerationService struct {
@@ -167,7 +170,27 @@ func (s *GenerationService) Create(ctx context.Context, req CreateRequest) (*mod
 
 // runTask 后台执行：取池中账号 → 调 provider → 结算 / 退款。
 func (s *GenerationService) runTask(ctx context.Context, t *model.GenerationTask) {
+	if t == nil {
+		return
+	}
 	log := logger.L().With(zap.String("task", t.TaskID))
+	var runningAccID uint64
+	defer func() {
+		if rec := recover(); rec != nil {
+			reason := fmt.Sprintf("后台任务异常退出: %v", rec)
+			timeoutBudget := generationTimeoutBudget(t)
+			logger.FromCtx(ctx).Error("gen.task_panic_recovered",
+				zap.String("task_id", t.TaskID),
+				zap.String("provider", t.Provider),
+				zap.String("model_code", t.ModelCode),
+				zap.Int("count", t.Count),
+				zap.Uint64("account_id", runningAccID),
+				zap.Int64("timeout_budget_ms", timeoutBudget.Milliseconds()),
+				zap.ByteString("stack", debug.Stack()),
+			)
+			s.finalizeFailedTask(ctx, t, reason, runningAccID, timeoutBudget, t.StartedAt)
+		}
+	}()
 
 	prov, ok := s.providers[t.Provider]
 	if !ok {
@@ -210,6 +233,7 @@ func (s *GenerationService) runTask(ctx context.Context, t *model.GenerationTask
 			return
 		}
 		acc = picked
+		runningAccID = acc.ID
 		if err := s.repo.SetRunning(ctx, t.TaskID, acc.ID); err != nil {
 			log.Warn("set running failed", zap.Error(err))
 		}
@@ -285,6 +309,7 @@ func (s *GenerationService) runTask(ctx context.Context, t *model.GenerationTask
 		}
 		releaseAcc(acc)
 		acc = nil
+		runningAccID = 0
 		if attempt == maxAttempts || !retryableProviderError(err) {
 			s.failTask(ctx, t, fmt.Sprintf("provider call: %v", err))
 			return
@@ -303,6 +328,7 @@ func (s *GenerationService) runTask(ctx context.Context, t *model.GenerationTask
 	}
 	releaseAcc(acc)
 	s.pool.MarkUsed(ctx, acc.ID)
+	runningAccID = acc.ID
 
 	results := make([]*model.GenerationResult, 0, len(res.Assets))
 	for i, a := range res.Assets {
@@ -367,6 +393,17 @@ func generationTimeoutForTask(t *model.GenerationTask, params map[string]any) ti
 		}
 	}
 	return timeout
+}
+
+func generationTimeoutBudget(t *model.GenerationTask) time.Duration {
+	if t == nil {
+		return generationTimeoutForTask(nil, nil)
+	}
+	var params map[string]any
+	if strings.TrimSpace(t.Params) != "" {
+		_ = json.Unmarshal([]byte(t.Params), &params)
+	}
+	return generationTimeoutForTask(t, params)
 }
 
 func (s *GenerationService) makeUpstreamLogger(t *model.GenerationTask, acc *model.Account) provider.UpstreamLogger {
@@ -1276,21 +1313,70 @@ func (s *GenerationService) failTask(ctx context.Context, t *model.GenerationTas
 	}
 }
 
+func (s *GenerationService) finalizeFailedTask(ctx context.Context, t *model.GenerationTask, reason string, accountID uint64, timeoutBudget time.Duration, startedAt *time.Time) {
+	if t == nil {
+		return
+	}
+	if s != nil && s.repo != nil {
+		if current, err := s.repo.GetByTaskID(ctx, t.TaskID); err == nil && current != nil {
+			if current.Status != model.GenStatusPending && current.Status != model.GenStatusRunning {
+				return
+			}
+			t = current
+			if startedAt == nil && current.StartedAt != nil {
+				startedAt = current.StartedAt
+			}
+			if accountID == 0 && current.AccountID != nil {
+				accountID = *current.AccountID
+			}
+		}
+	}
+	displayReason := userFacingGenerationError(reason)
+	fields := []zap.Field{
+		zap.String("task_id", t.TaskID),
+		zap.String("provider", t.Provider),
+		zap.String("model_code", t.ModelCode),
+		zap.Int("count", t.Count),
+		zap.Int64("timeout_budget_ms", timeoutBudget.Milliseconds()),
+		zap.String("reason", displayReason),
+	}
+	if accountID > 0 {
+		fields = append(fields, zap.Uint64("account_id", accountID))
+	}
+	if startedAt != nil {
+		fields = append(fields, zap.Time("started_at", startedAt.UTC()))
+	}
+	if err := s.repo.SetFailed(ctx, t.TaskID, displayReason); err != nil {
+		logger.FromCtx(ctx).Warn("gen.task_fail_finalize", append(fields, zap.Error(err), zap.String("step", "set_failed"))...)
+	} else {
+		logger.FromCtx(ctx).Warn("gen.task_fail_finalize", fields...)
+	}
+	if t.CostPoints > 0 {
+		if err := s.billing.FailRefund(ctx, t.TaskID, displayReason); err != nil {
+			logger.FromCtx(ctx).Warn("gen.task_fail_finalize", append(fields, zap.Error(err), zap.String("step", "refund"))...)
+		}
+	}
+}
+
 // ReapStaleTasks closes tasks that were left pending/running after a restart or
 // a killed provider request. Normal in-flight jobs have much shorter context
 // deadlines than these cutoffs, so this only catches genuinely abandoned rows.
 func (s *GenerationService) ReapStaleTasks(ctx context.Context, userID uint64) {
+	s.reapStaleTasks(ctx, userID, 200)
+}
+
+func (s *GenerationService) ReapTaskIfStale(ctx context.Context, taskID string, userID uint64) {
 	if s == nil || s.db == nil {
 		return
 	}
-	now := time.Now().UTC()
-	cutoff := now.Add(-1 * time.Hour)
+	if strings.TrimSpace(taskID) == "" {
+		return
+	}
 	var tasks []*model.GenerationTask
 	q := s.db.WithContext(ctx).
-		Where("deleted_at IS NULL AND status IN ?", []int8{model.GenStatusPending, model.GenStatusRunning}).
-		Where("(started_at IS NOT NULL AND started_at < ?) OR (started_at IS NULL AND created_at < ?)", cutoff, cutoff).
-		Order("id ASC").
-		Limit(200)
+		Where("deleted_at IS NULL AND task_id = ?", taskID).
+		Where("status IN ?", []int8{model.GenStatusPending, model.GenStatusRunning}).
+		Limit(1)
 	if userID > 0 {
 		q = q.Where("user_id = ?", userID)
 	}
@@ -1298,9 +1384,122 @@ func (s *GenerationService) ReapStaleTasks(ctx context.Context, userID uint64) {
 		logger.FromCtx(ctx).Warn("gen.stale.query_failed", zap.Error(err))
 		return
 	}
-	for _, t := range tasks {
-		s.failTask(ctx, t, "任务执行超时，已自动结束")
+	if len(tasks) == 0 {
+		return
 	}
+	s.failStaleTasks(ctx, tasks)
+}
+
+func (s *GenerationService) reapStaleTasks(ctx context.Context, userID uint64, limit int) {
+	if s == nil || s.db == nil {
+		return
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	var tasks []*model.GenerationTask
+	q := s.db.WithContext(ctx).
+		Where("deleted_at IS NULL AND status IN ?", []int8{model.GenStatusPending, model.GenStatusRunning}).
+		Order("id ASC").
+		Limit(limit)
+	if userID > 0 {
+		q = q.Where("user_id = ?", userID)
+	}
+	if err := q.Find(&tasks).Error; err != nil {
+		logger.FromCtx(ctx).Warn("gen.stale.query_failed", zap.Error(err))
+		return
+	}
+	s.failStaleTasks(ctx, tasks)
+}
+
+func (s *GenerationService) failStaleTasks(ctx context.Context, tasks []*model.GenerationTask) {
+	now := time.Now().UTC()
+	for _, t := range tasks {
+		if !isTaskStaleAt(t, now) {
+			continue
+		}
+		timeoutBudget := generationTimeoutBudget(t)
+		var startedAt *time.Time
+		if t.StartedAt != nil {
+			startedAt = t.StartedAt
+		}
+		accountID := uint64(0)
+		if t.AccountID != nil {
+			accountID = *t.AccountID
+		}
+		logger.FromCtx(ctx).Warn("gen.task_stale_reaped",
+			zap.String("task_id", t.TaskID),
+			zap.String("provider", t.Provider),
+			zap.String("model_code", t.ModelCode),
+			zap.Int("count", t.Count),
+			zap.Uint64("account_id", accountID),
+			zap.Int64("timeout_budget_ms", timeoutBudget.Milliseconds()),
+			zap.String("reason", "任务执行超时，已自动结束"),
+		)
+		s.finalizeFailedTask(ctx, t, "任务执行超时，已自动结束", accountID, timeoutBudget, startedAt)
+	}
+}
+
+func isTaskStaleAt(t *model.GenerationTask, now time.Time) bool {
+	if t == nil {
+		return false
+	}
+	if t.Status != model.GenStatusPending && t.Status != model.GenStatusRunning {
+		return false
+	}
+	timeoutBudget := generationTimeoutBudget(t) + staleTaskGrace
+	base := t.CreatedAt
+	if t.StartedAt != nil && !t.StartedAt.IsZero() {
+		base = *t.StartedAt
+	}
+	if base.IsZero() {
+		return false
+	}
+	return base.UTC().Add(timeoutBudget).Before(now.UTC())
+}
+
+type GenerationTaskReaper struct {
+	svc      *GenerationService
+	interval time.Duration
+}
+
+func NewGenerationTaskReaper(svc *GenerationService, interval time.Duration) *GenerationTaskReaper {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	return &GenerationTaskReaper{svc: svc, interval: interval}
+}
+
+func (r *GenerationTaskReaper) Start(ctx context.Context) {
+	if r == nil || r.svc == nil || r.svc.db == nil {
+		return
+	}
+	go r.loop(ctx)
+}
+
+func (r *GenerationTaskReaper) loop(ctx context.Context) {
+	r.svc.reapStaleTasks(ctx, 0, 200)
+	ticker := time.NewTicker(r.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.svc.reapStaleTasks(ctx, 0, 200)
+		}
+	}
+}
+
+func NewGenerationTaskReaperForDB(db *gorm.DB, aes *crypto.AESGCM, interval time.Duration) *GenerationTaskReaper {
+	if db == nil {
+		return nil
+	}
+	genRepo := repo.NewGenerationRepo(db)
+	walletRepo := repo.NewWalletRepo(db)
+	billingSvc := NewBillingService(db, walletRepo)
+	genSvc := NewGenerationService(db, genRepo, nil, billingSvc, nil, nil, aes, nil, nil, nil)
+	return NewGenerationTaskReaper(genSvc, interval)
 }
 
 // === helpers ===
