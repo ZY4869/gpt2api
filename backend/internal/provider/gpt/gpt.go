@@ -1561,43 +1561,53 @@ func (p *Provider) webDownloadAsDataURL(ctx context.Context, client *http.Client
 	if strings.HasPrefix(downloadURL, "/") {
 		downloadURL = strings.TrimRight(base, "/") + downloadURL
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
-	if err != nil {
-		return "", "", err
-	}
-	if shouldUseWebDownloadHeaders(base, downloadURL) {
-		targetPath := "/"
-		if parsed, err := url.Parse(downloadURL); err == nil && parsed.Path != "" {
-			targetPath = parsed.Path
+	for attempt := 0; attempt < 3; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+		if err != nil {
+			return "", "", err
 		}
-		for k, v := range webBaseHeaders(fp, token, targetPath, cookie) {
-			httpReq.Header.Set(k, v)
+		if shouldUseWebDownloadHeaders(base, downloadURL) {
+			targetPath := "/"
+			if parsed, err := url.Parse(downloadURL); err == nil && parsed.Path != "" {
+				targetPath = parsed.Path
+			}
+			for k, v := range webBaseHeaders(fp, token, targetPath, cookie) {
+				httpReq.Header.Set(k, v)
+			}
+			httpReq.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
 		}
-		httpReq.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			return "", "", err
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return "", "", readErr
+		}
+		if resp.StatusCode >= 400 {
+			return "", "", fmt.Errorf("download image %d: %s", resp.StatusCode, snippet(data, 160))
+		}
+		if len(data) == 0 {
+			return "", "", fmt.Errorf("download image empty body")
+		}
+		if nextURL := webWrappedDownloadURL(data, resp.Header.Get("Content-Type")); nextURL != "" {
+			downloadURL = normalizeWebWrappedDownloadURL(base, nextURL)
+			if downloadURL == "" {
+				return "", "", fmt.Errorf("download image missing wrapped download url")
+			}
+			continue
+		}
+		mime := resp.Header.Get("Content-Type")
+		if idx := strings.Index(mime, ";"); idx >= 0 {
+			mime = mime[:idx]
+		}
+		if mime == "" || !strings.HasPrefix(mime, "image/") {
+			mime = http.DetectContentType(data)
+		}
+		return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), mime, nil
 	}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", "", err
-	}
-	if resp.StatusCode >= 400 {
-		return "", "", fmt.Errorf("download image %d: %s", resp.StatusCode, snippet(data, 160))
-	}
-	if len(data) == 0 {
-		return "", "", fmt.Errorf("download image empty body")
-	}
-	mime := resp.Header.Get("Content-Type")
-	if idx := strings.Index(mime, ";"); idx >= 0 {
-		mime = mime[:idx]
-	}
-	if mime == "" || !strings.HasPrefix(mime, "image/") {
-		mime = http.DetectContentType(data)
-	}
-	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), mime, nil
+	return "", "", fmt.Errorf("download image exceeded wrapped redirect limit")
 }
 
 func (p *Provider) webUploadImage(ctx context.Context, client *http.Client, base string, fp webFP, token, cookie, ref, name string) (webUploadMeta, error) {
@@ -1742,6 +1752,38 @@ func (p *Provider) webProcessUploadStream(ctx context.Context, client *http.Clie
 }
 
 // === helpers ===
+
+func webWrappedDownloadURL(data []byte, contentType string) string {
+	body := strings.TrimSpace(string(data))
+	if body == "" {
+		return ""
+	}
+	lowerType := strings.ToLower(strings.TrimSpace(contentType))
+	if lowerType != "" && !strings.Contains(lowerType, "json") && !(strings.HasPrefix(body, "{") && strings.Contains(body, "\"download_url\"")) {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return ""
+	}
+	for _, key := range []string{"download_url", "url"} {
+		if s := strings.TrimSpace(fmt.Sprint(payload[key])); s != "" && isGeneratedWebAssetURL(s) {
+			return s
+		}
+	}
+	return ""
+}
+
+func normalizeWebWrappedDownloadURL(base, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "/") {
+		return strings.TrimRight(base, "/") + raw
+	}
+	return raw
+}
 
 func strParam(p map[string]any, key, def string) string {
 	if p == nil {

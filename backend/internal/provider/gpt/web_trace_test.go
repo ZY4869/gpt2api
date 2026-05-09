@@ -287,6 +287,21 @@ func TestExtractWebImageDirectURLsAcceptsRelativeBackendDownloadPaths(t *testing
 	}
 }
 
+func TestWebWrappedDownloadURLExtractsNestedDownloadTarget(t *testing.T) {
+	raw := []byte(`{"status":"success","download_url":"https://chatgpt.com/backend-api/estuary/content?id=file_123&ts=1&p=fs"}`)
+	got := webWrappedDownloadURL(raw, "application/json")
+	if got != "https://chatgpt.com/backend-api/estuary/content?id=file_123&ts=1&p=fs" {
+		t.Fatalf("unexpected wrapped download url %q", got)
+	}
+}
+
+func TestNormalizeWebWrappedDownloadURLExpandsRelativePath(t *testing.T) {
+	got := normalizeWebWrappedDownloadURL("https://chatgpt.com", "/backend-api/files/download/file_123")
+	if got != "https://chatgpt.com/backend-api/files/download/file_123" {
+		t.Fatalf("unexpected normalized wrapped url %q", got)
+	}
+}
+
 func TestAppendUniqueWebAssetSkipsDuplicateDataURL(t *testing.T) {
 	seen := map[string]bool{}
 	assets := make([]provider.Asset, 0, 2)
