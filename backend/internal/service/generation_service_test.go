@@ -41,3 +41,10 @@ func TestIsTransientProviderPathErrorTreatsTransientNetworkAsTransient(t *testin
 		t.Fatalf("expected network reset to be treated as transient path error")
 	}
 }
+
+func TestActualGenerationCostUsesActualResultCount(t *testing.T) {
+	got := actualGenerationCost(1000, 10, 8)
+	if got != 800 {
+		t.Fatalf("expected cost for 8 actual results, got %d", got)
+	}
+}

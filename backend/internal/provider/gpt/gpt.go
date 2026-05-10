@@ -273,6 +273,9 @@ type webConversationImageState struct {
 	SedimentIDs           []string
 	DirectURLs            []string
 	HasAuthoritativeOrder bool
+	UpstreamDone          bool
+	DoneStatus            string
+	DoneReason            string
 }
 
 type webImageCandidate struct {
@@ -298,19 +301,22 @@ type webImageCandidatePool struct {
 }
 
 type webImageTestModeState struct {
-	Enabled                   bool
-	Mode                      string
-	DownloadDeferred          bool
-	CollectionCandidateCount  int
-	AuthoritativeComplete     bool
-	AuthoritativeStableRounds int
-	CurrentOrderStableRounds  int
+	Enabled                    bool
+	Mode                       string
+	DownloadDeferred           bool
+	CollectionCandidateCount   int
+	AuthoritativeComplete      bool
+	AuthoritativeStableRounds  int
+	CurrentOrderStableRounds   int
 	AvailableOrderStableRounds int
-	FirstCompleteOrderReady   bool
-	FinalDownloadStarted      bool
-	FinalDownloadSeqCount     int
-	FinalOrderStrategy        string
-	StrictFailOnIncomplete    bool
+	FirstCompleteOrderReady    bool
+	UpstreamDone               bool
+	DoneStatus                 string
+	DoneReason                 string
+	FinalDownloadStarted       bool
+	FinalDownloadSeqCount      int
+	FinalOrderStrategy         string
+	StrictFailOnIncomplete     bool
 }
 
 type webImagePollStep struct {
@@ -471,6 +477,9 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 				addUniqueString(&sedimentIDs, pollState.SedimentIDs...)
 				addUniqueString(&directURLs, pollState.DirectURLs...)
 				state = mergeWebConversationImageState(state, pollState)
+				testMode.UpstreamDone = state.UpstreamDone
+				testMode.DoneStatus = state.DoneStatus
+				testMode.DoneReason = state.DoneReason
 				if pollCount == 1 || pollCount%6 == 0 {
 					libCtx := webImagePollStepContext(ctx)
 					libFileIDs, libErr := p.webLibraryImageIDs(libCtx, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs)
@@ -558,10 +567,10 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			updateWebImageCandidateOrder(candidate, state, idx, pollCount)
 		}
 		if testMode.Enabled {
-			if webImageTestModeReadyToFinalize(testMode.CollectionCandidateCount, count, testMode.AuthoritativeComplete, stableRounds, currentOrderStableRounds, availableOrderStableRounds, firstCompleteOrderSnapshot, pollCount) || conversationID == "" || time.Now().After(deadline) {
+			if webImageTestModeReadyToFinalize(testMode.CollectionCandidateCount, count, testMode.AuthoritativeComplete, stableRounds, currentOrderStableRounds, availableOrderStableRounds, firstCompleteOrderSnapshot, pollCount, testMode.UpstreamDone) || conversationID == "" || time.Now().After(deadline) {
 				break
 			}
-		} else if countWebImageCandidatesWithData(candidatePool) >= count || conversationID == "" || time.Now().After(deadline) {
+		} else if countWebImageCandidatesWithData(candidatePool) >= count || (state.UpstreamDone && countWebImageCandidatesWithData(candidatePool) > 0) || conversationID == "" || time.Now().After(deadline) {
 			break
 		}
 		select {
@@ -579,6 +588,9 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 					"download_errors":            downloadErrs,
 					"authoritative_order_found":  state.HasAuthoritativeOrder,
 					"authoritative_count":        len(state.OrderedRefs),
+					"upstream_done":              state.UpstreamDone,
+					"done_status":                state.DoneStatus,
+					"done_reason":                state.DoneReason,
 					"strict_single_conversation": true,
 				}, webImageTestModeMeta(testMode)),
 			})
@@ -592,22 +604,28 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		"settle_poll_count":         0,
 		"authoritative_order_found": state.HasAuthoritativeOrder,
 		"authoritative_count":       len(state.OrderedRefs),
+		"upstream_done":             state.UpstreamDone,
+		"done_status":               state.DoneStatus,
+		"done_reason":               state.DoneReason,
 		"fallback_used":             false,
 	}
-	if !testMode.Enabled && conversationID != "" && count > 1 && countWebImageCandidatesWithData(candidatePool) >= count {
+	if !testMode.Enabled && conversationID != "" && count > 1 && (countWebImageCandidatesWithData(candidatePool) >= count || (state.UpstreamDone && countWebImageCandidatesWithData(candidatePool) > 0)) {
 		settleMeta["settle_started"] = true
 		settledState, settlePollCount, settled := webSettleImageOrder(ctx, p, client, base, fp, req.Credential, req.SolverCookies, conversationID, refs, state, count, deadline)
 		settleMeta["settle_poll_count"] = settlePollCount
 		settleMeta["settle_completed"] = settled
 		settleMeta["authoritative_order_found"] = settledState.HasAuthoritativeOrder
 		settleMeta["authoritative_count"] = len(settledState.OrderedRefs)
+		settleMeta["upstream_done"] = settledState.UpstreamDone
+		settleMeta["done_status"] = settledState.DoneStatus
+		settleMeta["done_reason"] = settledState.DoneReason
 		settleMeta["fallback_used"] = !settledState.HasAuthoritativeOrder || len(settledState.OrderedRefs) < count
 		state = settledState
 		webApplyAuthoritativeOrder(candidatePool, state.OrderedRefs)
 	}
 	if testMode.Enabled {
 		settleMeta["settle_started"] = true
-		settleMeta["settle_completed"] = testMode.AuthoritativeComplete && stableRounds >= 2
+		settleMeta["settle_completed"] = (testMode.AuthoritativeComplete && stableRounds >= 2) || testMode.UpstreamDone
 		settleMeta["settle_poll_count"] = pollCount
 		settleMeta["fallback_used"] = !settleMeta["settle_completed"].(bool)
 	}
@@ -623,6 +641,9 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			"asset_count":                countWebImageCandidatesWithData(candidatePool),
 			"authoritative_order_found":  state.HasAuthoritativeOrder,
 			"authoritative_count":        len(state.OrderedRefs),
+			"upstream_done":              state.UpstreamDone,
+			"done_status":                state.DoneStatus,
+			"done_reason":                state.DoneReason,
 			"settle_started":             settleMeta["settle_started"],
 			"settle_completed":           settleMeta["settle_completed"],
 			"settle_poll_count":          settleMeta["settle_poll_count"],
@@ -645,7 +666,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 			})
 			return nil, fmt.Errorf("%s", errText)
 		}
-		finalCandidates, finalStrategy := resolveWebImageTestModeFinalCandidates(candidatePool, count, testMode.AuthoritativeComplete, stableRounds, currentOrderSnapshot, currentOrderStableRounds, availableOrderSnapshot, availableOrderStableRounds, firstCompleteOrderSnapshot)
+		finalCandidates, finalStrategy := resolveWebImageTestModeFinalCandidates(candidatePool, count, testMode.AuthoritativeComplete, stableRounds, currentOrderSnapshot, currentOrderStableRounds, availableOrderSnapshot, availableOrderStableRounds, firstCompleteOrderSnapshot, testMode.UpstreamDone)
 		testMode.FinalOrderStrategy = finalStrategy
 		if len(finalCandidates) == 0 {
 			errText := fmt.Sprintf("gpt image2 web test mode could not build final download order (%d/%d authoritative=%v stable_rounds=%d strategy=%s)", len(finalCandidates), count, testMode.AuthoritativeComplete, stableRounds, finalStrategy)
@@ -663,10 +684,12 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 				Provider: "gpt",
 				Stage:    "web.partial",
 				Meta: mergeMeta(map[string]any{
-					"conversation_id":      conversationID,
-					"final_order_strategy": finalStrategy,
+					"conversation_id":       conversationID,
+					"final_order_strategy":  finalStrategy,
 					"final_candidate_count": len(finalCandidates),
-					"requested_count":      count,
+					"requested_count":       count,
+					"upstream_done":         testMode.UpstreamDone,
+					"done_status":           testMode.DoneStatus,
 				}, webImageTestModeMeta(testMode)),
 			})
 			if testMode.StrictFailOnIncomplete {
@@ -752,7 +775,7 @@ func (p *Provider) generateImage2Web(ctx context.Context, req *provider.Request)
 		logUpstream(ctx, req, provider.UpstreamLogEntry{Provider: "gpt", Stage: "web.failed", ResponseExcerpt: "gpt image2 web returned 0 image"})
 		return nil, fmt.Errorf("gpt image2 web returned 0 image")
 	}
-	if requireCompleteSet && len(assets) < count && (!testMode.Enabled || testMode.StrictFailOnIncomplete) {
+	if requireCompleteSet && len(assets) < count && !state.UpstreamDone && (!testMode.Enabled || testMode.StrictFailOnIncomplete) {
 		errText := fmt.Sprintf("gpt image2 web single conversation returned %d/%d images", len(assets), count)
 		if lastDiag != "" {
 			errText += " (" + lastDiag + ")"
@@ -1428,12 +1451,16 @@ func (p *Provider) webConversationImageIDs(ctx context.Context, client *http.Cli
 	sedimentIDs := mergeOrderedUniqueStrings(rawSedimentIDs, toolSedimentIDs)
 	fileIDs, sedimentIDs, directURLs = filterWebGeneratedAssetIDs(fileIDs, sedimentIDs, directURLs, refs)
 	orderedRefs, hasAuthoritative := extractWebAuthoritativeOrderedRefs(raw, refs)
+	upstreamDone, doneStatus, doneReason := extractWebImageCompletion(raw)
 	return webConversationImageState{
 		OrderedRefs:           orderedRefs,
 		FileIDs:               fileIDs,
 		SedimentIDs:           sedimentIDs,
 		DirectURLs:            directURLs,
 		HasAuthoritativeOrder: hasAuthoritative,
+		UpstreamDone:          upstreamDone,
+		DoneStatus:            doneStatus,
+		DoneReason:            doneReason,
 	}, nil
 }
 
@@ -2041,18 +2068,21 @@ func webImageTestModeMeta(mode webImageTestModeState) map[string]any {
 		return nil
 	}
 	return map[string]any{
-		"web_test_mode":               mode.Mode,
-		"download_deferred":           mode.DownloadDeferred,
-		"collection_candidate_count":  mode.CollectionCandidateCount,
-		"authoritative_complete":      mode.AuthoritativeComplete,
-		"authoritative_stable_rounds": mode.AuthoritativeStableRounds,
-		"current_order_stable_rounds": mode.CurrentOrderStableRounds,
+		"web_test_mode":                 mode.Mode,
+		"download_deferred":             mode.DownloadDeferred,
+		"collection_candidate_count":    mode.CollectionCandidateCount,
+		"authoritative_complete":        mode.AuthoritativeComplete,
+		"authoritative_stable_rounds":   mode.AuthoritativeStableRounds,
+		"current_order_stable_rounds":   mode.CurrentOrderStableRounds,
 		"available_order_stable_rounds": mode.AvailableOrderStableRounds,
-		"first_complete_order_ready":  mode.FirstCompleteOrderReady,
-		"final_download_started":      mode.FinalDownloadStarted,
-		"final_download_seq_count":    mode.FinalDownloadSeqCount,
-		"final_order_strategy":        mode.FinalOrderStrategy,
-		"strict_fail_on_incomplete":   mode.StrictFailOnIncomplete,
+		"first_complete_order_ready":    mode.FirstCompleteOrderReady,
+		"upstream_done":                 mode.UpstreamDone,
+		"done_status":                   mode.DoneStatus,
+		"done_reason":                   mode.DoneReason,
+		"final_download_started":        mode.FinalDownloadStarted,
+		"final_download_seq_count":      mode.FinalDownloadSeqCount,
+		"final_order_strategy":          mode.FinalOrderStrategy,
+		"strict_fail_on_incomplete":     mode.StrictFailOnIncomplete,
 	}
 }
 
@@ -2085,6 +2115,9 @@ func webLogPollStep(ctx context.Context, req *provider.Request, mode webImageTes
 		"direct_urls":               len(state.DirectURLs),
 		"authoritative_order_found": state.HasAuthoritativeOrder,
 		"authoritative_count":       len(state.OrderedRefs),
+		"upstream_done":             state.UpstreamDone,
+		"done_status":               state.DoneStatus,
+		"done_reason":               state.DoneReason,
 	}, webImageTestModeMeta(mode), extras)
 	entry := provider.UpstreamLogEntry{
 		Provider: "gpt",
@@ -2485,6 +2518,139 @@ func extractWebAuthoritativeOrderedRefs(raw []byte, refs []webUploadMeta) ([]web
 	walkWebAuthoritativeImageMessages(v, exclude, &out)
 	out = filterUniqueWebOrderedRefs(out)
 	return out, len(out) > 0
+}
+
+func extractWebImageCompletion(raw []byte) (bool, string, string) {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false, "", ""
+	}
+	return walkWebImageCompletion(v)
+}
+
+func walkWebImageCompletion(v any) (bool, string, string) {
+	switch t := v.(type) {
+	case map[string]any:
+		if msg, ok := asWebMessageMap(t); ok && isWebImageCompletionMessage(msg) {
+			if done, status, reason := webImageMessageCompletion(msg); done {
+				return true, status, reason
+			}
+		}
+		if msgs, ok := t["messages"].([]any); ok {
+			for _, item := range msgs {
+				if done, status, reason := walkWebImageCompletion(item); done {
+					return true, status, reason
+				}
+			}
+			return false, "", ""
+		}
+		for _, val := range t {
+			if done, status, reason := walkWebImageCompletion(val); done {
+				return true, status, reason
+			}
+		}
+	case []any:
+		for _, val := range t {
+			if done, status, reason := walkWebImageCompletion(val); done {
+				return true, status, reason
+			}
+		}
+	}
+	return false, "", ""
+}
+
+func isWebImageCompletionMessage(msg map[string]any) bool {
+	if !isWebImageAssetMessage(msg) {
+		return false
+	}
+	metadata, _ := msg["metadata"].(map[string]any)
+	taskType := strings.ToLower(strings.TrimSpace(fmt.Sprint(metadata["async_task_type"])))
+	if taskType == "" {
+		taskType = strings.ToLower(strings.TrimSpace(fmt.Sprint(metadata["task_type"])))
+	}
+	if taskType != "" {
+		return strings.Contains(taskType, "image") || strings.Contains(taskType, "picture")
+	}
+	var fileIDs, sedimentIDs []string
+	extractWebAssetPointersFromMessage(msg, &fileIDs, &sedimentIDs)
+	return len(fileIDs) > 0 || len(sedimentIDs) > 0
+}
+
+func webImageMessageCompletion(msg map[string]any) (bool, string, string) {
+	statuses := make([]string, 0, 8)
+	reasons := make([]string, 0, 4)
+	collectWebStatusFields(msg, "", &statuses, &reasons)
+	for _, status := range statuses {
+		if isWebImageIncompleteStatus(status) {
+			return false, status, firstString(reasons)
+		}
+	}
+	for _, status := range statuses {
+		if isWebImageDoneStatus(status) {
+			return true, status, firstString(reasons)
+		}
+	}
+	return false, "", firstString(reasons)
+}
+
+func collectWebStatusFields(v any, key string, statuses, reasons *[]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			collectWebStatusFields(val, k, statuses, reasons)
+		}
+	case []any:
+		for _, val := range t {
+			collectWebStatusFields(val, key, statuses, reasons)
+		}
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return
+		}
+		lowerKey := strings.ToLower(strings.TrimSpace(key))
+		switch {
+		case lowerKey == "status" || lowerKey == "state" || lowerKey == "phase" ||
+			lowerKey == "finish_status" || lowerKey == "task_status" || lowerKey == "generation_status" ||
+			strings.HasSuffix(lowerKey, "_status") || strings.HasSuffix(lowerKey, "_state"):
+			addUniqueString(statuses, s)
+		case lowerKey == "finish_reason" || lowerKey == "done_reason" || lowerKey == "reason":
+			addUniqueString(reasons, s)
+		}
+	case bool:
+		lowerKey := strings.ToLower(strings.TrimSpace(key))
+		if t && (lowerKey == "done" || lowerKey == "completed" || lowerKey == "complete" || lowerKey == "finished" || lowerKey == "is_complete") {
+			addUniqueString(statuses, "completed")
+		}
+	}
+}
+
+func isWebImageIncompleteStatus(status string) bool {
+	s := normalizeWebStatus(status)
+	switch s {
+	case "queued", "queueing", "pending", "running", "run", "inprogress", "in_progress", "processing", "generating", "created", "started", "starting", "loading", "working":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWebImageDoneStatus(status string) bool {
+	s := normalizeWebStatus(status)
+	switch s {
+	case "success", "succeeded", "succeed", "complete", "completed", "done", "finished", "finishedsuccessfully", "finished_successfully", "ready", "final", "finalized":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeWebStatus(status string) string {
+	s := strings.ToLower(strings.TrimSpace(status))
+	s = strings.Trim(s, `"'`)
+	s = strings.ReplaceAll(s, "-", "_")
+	s = strings.ReplaceAll(s, " ", "_")
+	return s
 }
 
 func walkWebAuthoritativeImageMessages(v any, exclude map[string]bool, out *[]webOrderedRef) {
@@ -3016,6 +3182,11 @@ func mergeWebConversationImageState(base, extra webConversationImageState) webCo
 	base.SedimentIDs = mergeOrderedUniqueStrings(base.SedimentIDs, extra.SedimentIDs)
 	base.DirectURLs = mergeOrderedWebAssetURLs(base.DirectURLs, extra.DirectURLs)
 	base.HasAuthoritativeOrder = base.HasAuthoritativeOrder || extra.HasAuthoritativeOrder
+	if extra.UpstreamDone {
+		base.UpstreamDone = true
+		base.DoneStatus = extra.DoneStatus
+		base.DoneReason = extra.DoneReason
+	}
 	return base
 }
 
@@ -3119,7 +3290,7 @@ func webUpdateCandidatePoolFromResolvedURLs(pool *webImageCandidatePool, state w
 	}
 }
 
-func resolveWebImageTestModeFinalCandidates(pool *webImageCandidatePool, count int, authoritativeComplete bool, authoritativeStableRounds int, currentOrderSnapshot string, currentOrderStableRounds int, availableOrderSnapshot string, availableOrderStableRounds int, firstCompleteOrderSnapshot string) ([]*webImageCandidate, string) {
+func resolveWebImageTestModeFinalCandidates(pool *webImageCandidatePool, count int, authoritativeComplete bool, authoritativeStableRounds int, currentOrderSnapshot string, currentOrderStableRounds int, availableOrderSnapshot string, availableOrderStableRounds int, firstCompleteOrderSnapshot string, upstreamDone bool) ([]*webImageCandidate, string) {
 	switch {
 	case authoritativeComplete && authoritativeStableRounds >= 2:
 		return buildFinalOrderedWebCandidates(pool, count), "authoritative_stable"
@@ -3127,6 +3298,10 @@ func resolveWebImageTestModeFinalCandidates(pool *webImageCandidatePool, count i
 		return buildWebCandidatesFromSnapshot(pool, currentOrderSnapshot, count), "current_stable"
 	case firstCompleteOrderSnapshot != "":
 		return buildWebCandidatesFromSnapshot(pool, firstCompleteOrderSnapshot, count), "first_complete"
+	case upstreamDone && availableOrderSnapshot != "":
+		return buildWebCandidatesFromSnapshot(pool, availableOrderSnapshot, count), "upstream_done_partial"
+	case upstreamDone:
+		return buildFinalOrderedWebCandidates(pool, count), "upstream_done_current"
 	case availableOrderStableRounds >= 3 && availableOrderSnapshot != "":
 		return buildWebCandidatesFromSnapshot(pool, availableOrderSnapshot, count), "partial_stable"
 	default:
@@ -3134,7 +3309,7 @@ func resolveWebImageTestModeFinalCandidates(pool *webImageCandidatePool, count i
 	}
 }
 
-func webImageTestModeReadyToFinalize(collectionCandidateCount int, count int, authoritativeComplete bool, authoritativeStableRounds int, currentOrderStableRounds int, availableOrderStableRounds int, firstCompleteOrderSnapshot string, pollCount int) bool {
+func webImageTestModeReadyToFinalize(collectionCandidateCount int, count int, authoritativeComplete bool, authoritativeStableRounds int, currentOrderStableRounds int, availableOrderStableRounds int, firstCompleteOrderSnapshot string, pollCount int, upstreamDone bool) bool {
 	if collectionCandidateCount <= 0 {
 		return false
 	}
@@ -3150,7 +3325,7 @@ func webImageTestModeReadyToFinalize(collectionCandidateCount int, count int, au
 		}
 		return pollCount >= 12
 	}
-	return availableOrderStableRounds >= 3 && pollCount >= 6
+	return upstreamDone && availableOrderStableRounds >= 2 && pollCount >= 2
 }
 
 func buildFinalOrderedWebCandidates(pool *webImageCandidatePool, limit int) []*webImageCandidate {

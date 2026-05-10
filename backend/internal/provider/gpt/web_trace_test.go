@@ -60,6 +60,43 @@ func TestParseWebImageSSE(t *testing.T) {
 	if lastText != "" {
 		t.Fatalf("unexpected text: %q", lastText)
 	}
+	if done, status, _ := extractWebImageCompletion([]byte(`{"type":"response.completed","response":{"output":[{"type":"image_generation_call","result":"ZmFrZS1iNjQ=","output_format":"png"}]}}`)); done || status != "" {
+		t.Fatalf("response.completed stream event should not be treated as final web conversation completion: done=%v status=%q", done, status)
+	}
+}
+
+func TestExtractWebImageCompletionIgnoresRunningImageMessage(t *testing.T) {
+	raw := []byte(`{
+		"conversation_id":"conv_running",
+		"messages":[
+			{"message":{
+				"author":{"role":"assistant"},
+				"metadata":{"async_task_type":"image_generation","status":"in_progress","attachments":[{"file_id":"file_one123456"}]},
+				"content":{"content_type":"text","parts":["working"]}
+			}}
+		]
+	}`)
+	stateDone, status, _ := extractWebImageCompletion(raw)
+	if stateDone {
+		t.Fatalf("running image message should not be complete, status=%q", status)
+	}
+}
+
+func TestExtractWebImageCompletionAcceptsFinishedSuccessfully(t *testing.T) {
+	raw := []byte(`{
+		"conversation_id":"conv_done",
+		"messages":[
+			{"message":{
+				"author":{"role":"assistant"},
+				"metadata":{"async_task_type":"image_generation","status":"finished_successfully","attachments":[{"file_id":"file_one123456"}]},
+				"content":{"content_type":"text","parts":["done"]}
+			}}
+		]
+	}`)
+	done, status, _ := extractWebImageCompletion(raw)
+	if !done || status != "finished_successfully" {
+		t.Fatalf("expected finished_successfully completion, done=%v status=%q", done, status)
+	}
 }
 
 func TestParseWebImageSSEIgnoresUploadedReferenceIDs(t *testing.T) {
@@ -749,7 +786,7 @@ func TestResolveWebImageTestModeFinalCandidatesFallsBackToCurrentStable(t *testi
 	b.directOrderIndex = 1
 
 	snapshot := webCandidateOrderSnapshotKey(pool, 2)
-	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 2, false, 0, snapshot, 2, "", 0, "")
+	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 2, false, 0, snapshot, 2, "", 0, "", false)
 	if strategy != "current_stable" {
 		t.Fatalf("expected current_stable strategy, got %q", strategy)
 	}
@@ -765,7 +802,7 @@ func TestResolveWebImageTestModeFinalCandidatesFallsBackToFirstComplete(t *testi
 	a.directOrderIndex = 1
 	b.directOrderIndex = 0
 
-	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 2, false, 0, "", 0, "", 0, "file:file_b|file:file_a")
+	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 2, false, 0, "", 0, "", 0, "file:file_b|file:file_a", false)
 	if strategy != "first_complete" {
 		t.Fatalf("expected first_complete strategy, got %q", strategy)
 	}
@@ -775,22 +812,22 @@ func TestResolveWebImageTestModeFinalCandidatesFallsBackToFirstComplete(t *testi
 }
 
 func TestWebImageTestModeReadyToFinalizeRequiresCompleteSet(t *testing.T) {
-	if webImageTestModeReadyToFinalize(0, 10, true, 2, 2, 0, "file:file_1", 12) {
+	if webImageTestModeReadyToFinalize(0, 10, true, 2, 2, 0, "file:file_1", 12, false) {
 		t.Fatalf("expected incomplete set to remain pending")
 	}
 }
 
 func TestWebImageTestModeReadyToFinalizeAcceptsCurrentStableOrder(t *testing.T) {
-	if !webImageTestModeReadyToFinalize(10, 10, false, 0, 2, 0, "file:file_1", 8) {
+	if !webImageTestModeReadyToFinalize(10, 10, false, 0, 2, 0, "file:file_1", 8, false) {
 		t.Fatalf("expected stable current order to finalize")
 	}
 }
 
 func TestWebImageTestModeReadyToFinalizeAllowsFirstCompleteFallbackAfterExtraPolling(t *testing.T) {
-	if webImageTestModeReadyToFinalize(10, 10, false, 0, 1, 0, "file:file_1|file:file_2", 11) {
+	if webImageTestModeReadyToFinalize(10, 10, false, 0, 1, 0, "file:file_1|file:file_2", 11, false) {
 		t.Fatalf("expected first-complete fallback to wait a bit longer")
 	}
-	if !webImageTestModeReadyToFinalize(10, 10, false, 0, 1, 0, "file:file_1|file:file_2", 12) {
+	if !webImageTestModeReadyToFinalize(10, 10, false, 0, 1, 0, "file:file_1|file:file_2", 12, false) {
 		t.Fatalf("expected first-complete fallback after extra polling")
 	}
 }
@@ -802,7 +839,7 @@ func TestResolveWebImageTestModeFinalCandidatesFallsBackToPartialStable(t *testi
 	a.directOrderIndex = 0
 	b.directOrderIndex = 1
 
-	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 10, false, 0, "", 0, "file:file_a|file:file_b", 3, "")
+	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 10, false, 0, "", 0, "file:file_a|file:file_b", 3, "", false)
 	if strategy != "partial_stable" {
 		t.Fatalf("expected partial_stable strategy, got %q", strategy)
 	}
@@ -811,12 +848,31 @@ func TestResolveWebImageTestModeFinalCandidatesFallsBackToPartialStable(t *testi
 	}
 }
 
-func TestWebImageTestModeReadyToFinalizeAllowsStablePartialSet(t *testing.T) {
-	if webImageTestModeReadyToFinalize(8, 10, false, 0, 0, 2, "", 5) {
+func TestWebImageTestModeReadyToFinalizeRequiresUpstreamDoneForPartialSet(t *testing.T) {
+	if webImageTestModeReadyToFinalize(8, 10, false, 0, 0, 3, "", 6, false) {
+		t.Fatalf("partial set should not finalize without upstream done")
+	}
+	if webImageTestModeReadyToFinalize(8, 10, false, 0, 0, 1, "", 2, true) {
 		t.Fatalf("expected partial set to wait for more confirmation")
 	}
-	if !webImageTestModeReadyToFinalize(8, 10, false, 0, 0, 3, "", 6) {
-		t.Fatalf("expected stable partial set to finalize")
+	if !webImageTestModeReadyToFinalize(8, 10, false, 0, 0, 2, "", 2, true) {
+		t.Fatalf("expected upstream-done partial set to finalize")
+	}
+}
+
+func TestResolveWebImageTestModeFinalCandidatesUsesUpstreamDonePartial(t *testing.T) {
+	pool := newWebImageCandidatePool()
+	a := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_a"})
+	b := ensureWebImageCandidateForOrderedRef(pool, webOrderedRef{FileID: "file_b"})
+	a.directOrderIndex = 0
+	b.directOrderIndex = 1
+
+	got, strategy := resolveWebImageTestModeFinalCandidates(pool, 10, false, 0, "", 0, "file:file_a|file:file_b", 2, "", true)
+	if strategy != "upstream_done_partial" {
+		t.Fatalf("expected upstream_done_partial strategy, got %q", strategy)
+	}
+	if len(got) != 2 || got[0].fileID != "file_a" || got[1].fileID != "file_b" {
+		t.Fatalf("unexpected upstream-done partial order: %#v", got)
 	}
 }
 

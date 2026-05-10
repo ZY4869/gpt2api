@@ -2,10 +2,10 @@
 //
 // 流程（与 docs/02-后端规范.md §6 对齐）：
 //
-//   1. PreDeduct  → wallet.Freeze + 写 consume_record(status=0)
-//   2. (上游调用)
-//   3. Settle     → wallet.Settle  + 更新 consume_record(status=1)
-//   4. Failure    → wallet.Refund  + 更新 consume_record(status=2) + 写 refund_record
+//  1. PreDeduct  → wallet.Freeze + 写 consume_record(status=0)
+//  2. (上游调用)
+//  3. Settle     → wallet.Settle  + 更新 consume_record(status=1)
+//  4. Failure    → wallet.Refund  + 更新 consume_record(status=2) + 写 refund_record
 //
 // 任务 ID（task_id）在调用方生成，应使用 ULID 字符串。
 package service
@@ -156,6 +156,63 @@ func (s *BillingService) FinalizeUsage(ctx context.Context, taskID string, actua
 		return errcode.DBError.Wrap(err)
 	}
 	logger.FromCtx(ctx).Info("billing.finalize_usage", zap.String("task", taskID), zap.Int64("estimate", estimated), zap.Int64("actual", actualPoints))
+	return nil
+}
+
+// FinalizeCount settles a frozen count-based consume record using the actual
+// number of generated assets. It refunds the unused frozen balance when fewer
+// assets are returned than requested.
+func (s *BillingService) FinalizeCount(ctx context.Context, taskID string, actualCount int, accountID *uint64) error {
+	var rec model.ConsumeRecord
+	if err := s.db.WithContext(ctx).Where("task_id = ?", taskID).First(&rec).Error; err != nil {
+		return errcode.ResourceMissing
+	}
+	if rec.Status != model.ConsumeStatusFrozen {
+		return nil
+	}
+	if actualCount < 0 {
+		actualCount = 0
+	}
+	actualPoints := rec.UnitPoints * int64(actualCount)
+	if actualPoints == 0 {
+		if err := s.wallet.Refund(ctx, rec.UserID, taskID, "generation returned no billable result", rec.TotalPoints); err != nil {
+			return errcode.DBError.Wrap(err)
+		}
+		return s.db.WithContext(ctx).Model(&model.ConsumeRecord{}).
+			Where("task_id = ?", taskID).
+			Updates(map[string]any{"status": model.ConsumeStatusRefunded, "count": actualCount, "total_points": 0}).Error
+	}
+	if actualPoints < rec.TotalPoints {
+		if err := s.wallet.RefundFrozenPart(ctx, rec.UserID, taskID, "generation partial result refund", rec.TotalPoints-actualPoints); err != nil {
+			return errcode.DBError.Wrap(err)
+		}
+	} else if actualPoints > rec.TotalPoints {
+		if err := s.wallet.Settle(ctx, rec.UserID, rec.TotalPoints); err != nil {
+			return errcode.DBError.Wrap(err)
+		}
+		if _, err := s.wallet.Adjust(ctx, rec.UserID, model.BizConsume, taskID+":extra", -(actualPoints - rec.TotalPoints), rec.ModelCode+" extra result", false); err != nil {
+			if errors.Is(err, repo.ErrInsufficient) {
+				return errcode.InsufficientPoints
+			}
+			return errcode.DBError.Wrap(err)
+		}
+		updates := map[string]any{"status": model.ConsumeStatusSettled, "count": actualCount, "total_points": actualPoints}
+		if accountID != nil {
+			updates["account_id"] = *accountID
+		}
+		return s.db.WithContext(ctx).Model(&model.ConsumeRecord{}).Where("task_id = ?", taskID).Updates(updates).Error
+	}
+	if err := s.wallet.Settle(ctx, rec.UserID, actualPoints); err != nil {
+		return errcode.DBError.Wrap(err)
+	}
+	updates := map[string]any{"status": model.ConsumeStatusSettled, "count": actualCount, "total_points": actualPoints}
+	if accountID != nil {
+		updates["account_id"] = *accountID
+	}
+	if err := s.db.WithContext(ctx).Model(&model.ConsumeRecord{}).Where("task_id = ?", taskID).Updates(updates).Error; err != nil {
+		return errcode.DBError.Wrap(err)
+	}
+	logger.FromCtx(ctx).Info("billing.finalize_count", zap.String("task", taskID), zap.Int("count", actualCount), zap.Int64("actual", actualPoints))
 	return nil
 }
 

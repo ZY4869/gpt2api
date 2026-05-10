@@ -17,8 +17,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime/debug"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -367,10 +367,21 @@ func (s *GenerationService) runTask(ctx context.Context, t *model.GenerationTask
 	}
 	s.updateAccountUsageMeta(ctx, acc, t, len(results))
 	if t.CostPoints > 0 {
-		if err := s.billing.Settle(ctx, t.TaskID, &acc.ID); err != nil {
-			log.Error("settle failed", zap.Error(err))
+		actualCost := actualGenerationCost(t.CostPoints, t.Count, len(results))
+		if err := s.repo.UpdateCost(ctx, t.TaskID, actualCost); err != nil {
+			log.Error("update final cost failed", zap.Error(err))
+		}
+		if err := s.billing.FinalizeCount(ctx, t.TaskID, len(results), &acc.ID); err != nil {
+			log.Error("finalize count billing failed", zap.Error(err))
 		}
 	}
+}
+
+func actualGenerationCost(estimatedCost int64, requestedCount, actualCount int) int64 {
+	if estimatedCost <= 0 || requestedCount <= 0 || actualCount <= 0 {
+		return 0
+	}
+	return (estimatedCost / int64(requestedCount)) * int64(actualCount)
 }
 
 func generationTimeoutForTask(t *model.GenerationTask, params map[string]any) time.Duration {
